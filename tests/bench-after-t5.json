@@ -1,0 +1,112 @@
+{
+  "tag": "after-opt",
+  "time": "2026-09-23 23:56:24",
+  "version": "0.2.0",
+  "measured_memory": false,
+  "aggregate": {
+    "tp": 4,
+    "fp": 0,
+    "fn": 0,
+    "tn": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "total_seconds": 245.18,
+    "total_files": 22878,
+    "total_mb": 243.81,
+    "mb_per_sec": 0.99
+  },
+  "results": [
+    {
+      "id": "T5-zcode-asar",
+      "path": "refs/ZCode/resources/app.asar",
+      "seconds": 245.179,
+      "files_scanned": 22878,
+      "bytes_scanned": 255651450,
+      "peak_mem_bytes": 0,
+      "raw_hits": 6909,
+      "caps": {
+        "envelope_encryption": "confirmed",
+        "global_config_collection": "confirmed",
+        "workspace_snapshot": "confirmed",
+        "object_storage_upload": "confirmed",
+        "credential_access": "confirmed",
+        "retry_backoff": "confirmed",
+        "telemetry_egress": "confirmed",
+        "browser_state_access": "likely",
+        "upload_credential_api": "likely",
+        "git_history_access": "likely",
+        "bulk_archive": "likely",
+        "shell_execution": "possible"
+      },
+      "cap_scores": {
+        "envelope_encryption": 43.48,
+        "global_config_collection": 31.7,
+        "workspace_snapshot": 28.98,
+        "object_storage_upload": 22.13,
+        "credential_access": 18.04,
+        "retry_backoff": 27.16,
+        "telemetry_egress": 23.0,
+        "browser_state_access": 13.38,
+        "upload_credential_api": 12.73,
+        "git_history_access": 11.05,
+        "bulk_archive": 12.78,
+        "shell_execution": 6.56
+      },
+      "cap_counts": {
+        "envelope_encryption": 183,
+        "global_config_collection": 111,
+        "workspace_snapshot": 89,
+        "object_storage_upload": 279,
+        "credential_access": 24,
+        "retry_backoff": 1058,
+        "telemetry_egress": 4656,
+        "browser_state_access": 75,
+        "upload_credential_api": 11,
+        "git_history_access": 30,
+        "bulk_archive": 228,
+        "shell_execution": 165
+      },
+      "errors": [],
+      "error": null,
+      "tp": 4,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "details": [
+        {
+          "cap": "workspace_snapshot",
+          "verdict": "TP",
+          "got": "confirmed"
+        },
+        {
+          "cap": "object_storage_upload",
+          "verdict": "TP",
+          "got": "confirmed"
+        },
+        {
+          "cap": "envelope_encryption",
+          "verdict": "TP",
+          "got": "confirmed"
+        },
+        {
+          "cap": "upload_credential_api",
+          "verdict": "TP",
+          "got": "likely"
+        }
+      ],
+      "extra": [
+        "browser_state_access",
+        "bulk_archive",
+        "credential_access",
+        "git_history_access",
+        "global_config_collection",
+        "retry_backoff",
+        "telemetry_egress"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "version": "1.0",
+  "updated": "2026-09-23",
+  "description": "AgentEgress 精度回归集。每条用例的预期结论都经过人工核对（依据见 note），用于计算 precision / recall。",
+  "level_ok_present": ["confirmed", "likely"],
+  "level_ok_absent": ["absent", "possible"],
+  "cases": [
+    {
+      "id": "T1-feedback",
+      "path": "<REPO>/refs/ZCode/packages/services/src/feedback",
+      "kind": "dir",
+      "expect_present": ["upload_credential_api", "object_storage_upload"],
+      "expect_absent": ["browser_state_access", "credential_access", "envelope_encryption"],
+      "note": "feedbackHttpClient.ts 内含 /feedback/attachment/upload-credential、x-oss-signature 表单字段。envelope_encryption 原标注为 present 是错的——该目录 6 个文件里没有任何 aes-/createCipheriv/rsa-oaep/publicEncrypt 命中（grep 已核实），凭据加密在 ../credential/providers/ 下。"
+    },
+    {
+      "id": "T2-provider-node",
+      "path": "<REPO>/refs/ZCode/packages/provider-node/src",
+      "kind": "dir",
+      "expect_present": ["retry_backoff"],
+      "expect_absent": ["browser_state_access", "upload_credential_api"],
+      "note": "zcode-builtin-remote-synchronizer.ts 含 failureCount 与指数退避。此处不应出现上传凭证或浏览器状态。"
+    },
+    {
+      "id": "T3-zwork-free",
+      "path": "<REPO>/refs/ZCode/packages/model-option-map/src",
+      "kind": "dir",
+      "expect_present": [],
+      "expect_absent": ["workspace_snapshot", "upload_credential_api", "object_storage_upload", "envelope_encryption"],
+      "note": "纯数据映射包，与网络外传无关。用于测误报。"
+    },
+    {
+      "id": "T4-vendor-runtime",
+      "path": "<KIMI_DATA_HOME>/daimon-bundle/runtime/python/cpython-3.12/Lib",
+      "kind": "dir",
+      "expect_present": [],
+      "expect_absent": ["workspace_snapshot", "upload_credential_api", "object_storage_upload", "envelope_encryption", "credential_access"],
+      "note": "纯 CPython 标准库运行时（携带区）。任何能力判定都应为负——这是最典型的误报诱因：subprocess/os.system 满天飞、tcl 目录下有几百个 .enc 编码表。"
+    },
+    {
+      "id": "T5-zcode-asar",
+      "path": "refs/ZCode/resources/app.asar",
+      "kind": "asar",
+      "expect_present": ["workspace_snapshot", "object_storage_upload", "envelope_encryption", "upload_credential_api"],
+      "expect_absent": [],
+      "note": "本机 ZCode 3.12.3.7463，含完整上传链路（/out/host/index.js 的 snapshot/upload-credential 与 x-oss-signature）。"
+    }
+  ]
+}

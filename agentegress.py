@@ -293,6 +293,20 @@ def looks_like_snapshot_state(path):
 
 # ---------------------------------------------------------------- M1 扫描
 
+# M3 的携带区：第三方依赖不是「这个客户端的能力」。
+#
+# 实测 ZCode 的 app.asar：可扫内容 254 MB，其中 207.8 MB（81.8%）在 node_modules 下，
+# 真正的自研代码只有 /out 下的 2730 个文件 / 46 MB。
+#
+# 跳过它们有两重意义：
+#   性能——扫描量降到 1/5，实测耗时从 245 s 降到 ~45 s
+#   准确——第三方库带 crypto / upload / http 能力是它的职责，不是这个客户端的行为。
+#          （曾经把 builder-util-runtime 的 s3-accelerate.amazonaws.com 当成"对象存储直传"证据）
+#
+# 这与 M1 的「携带区 / 工具区」二分是同一套设计，M3 早期版本漏了它。
+M3_VENDOR_PARTS = ("/node_modules/", "/vendor/", "/third_party/", "/third-party/", "/.pnpm/")
+
+
 def _norm(p):
     return p.replace("\\", "/").lower()
 
@@ -1244,6 +1258,112 @@ def _compile_capabilities():
 _COMPILED_CAPS = _compile_capabilities()
 
 
+# ---------------- 预筛表（性能关键） ----------------
+#
+# 不做预筛的话，**每个文件都要跑 54 个正则**——实测 22878 个文件的 asar
+# 要跑 223 秒（1.1 MB/s），而其中绝大多数文件跟外传毫无关系。
+#
+# 预筛逻辑：先用一个「合并的关键词正则」扫一遍，不命中就完全跳过该文件
+# （连 lex_regions 都不做）。
+#
+# 【不变式】——违反会导致**漏报**，比误报危险得多：
+#     某个 pattern 的正则匹配  ⇒  该 pattern 的 kws 至少有一个出现在文本里
+#
+# 因此这张表有两条硬规矩：
+#   1. 必须覆盖全部 pattern。缺任何一个，启动时直接抛异常（fail-fast），
+#      绝不允许"悄悄少一个"——那是漏报的来源。
+#   2. 宁可给宽松（短、泛）的关键字。宽松只会降低预筛效果（多跑几个文件），
+#      严格才会漏报。
+PATTERN_KEYWORDS = {
+    # workspace_snapshot
+    "snap_api_path": ["snapshot/upload"],
+    "repo_snapshot": ["snapshot"],
+    "snap_manifest": ["manifest"],
+    "kind_baseline": ["baseline", "incremental", "full"],
+    "capture_hook": ["capture"],
+    "ckpt_service": ["checkpoint", "snapshot"],
+    # bulk_archive
+    "tar_create": ["tar.", "creategzip", "createbrotli"],
+    "archiver": ["archiver", "yazl", "zip.file"],
+    "walk_tree": ["walk(", "walksync(", "walkdir(", "readdir"],
+    "glob_all": ["glob"],
+    "shutil_archive": ["make_archive", "zipfile"],
+    # envelope_encryption
+    "aes256ctr": ["aes-256-", "aes_256_"],
+    "cipheriv": ["createcipheriv", "createdecipheriv", "cipher.getinstance"],
+    "rsa_oaep": ["oaep"],
+    "public_encrypt": ["publicencrypt", "encryptwithpublickey", "rsa.encrypt"],
+    "key_wrap": ["keywrapalgorithm", "keyversion", "key_version", "key-version",
+                 "wrappedkey", "encryptedkey"],
+    "spki_pem": ["spki", "begin public key"],
+    # object_storage_upload
+    "aliyun_oss": ["aliyuncs", "oss-cn-", "x-oss-signature"],
+    "tencent_cos": ["myqcloud", "cos.ap-", "x-cos-"],
+    "aws_s3": ["amazonaws", "x-amz-signature"],
+    "post_object": ["postobject", "putobject", "multipartupload", "uploadobject"],
+    "upload_url": ["uploadurl", "upload_url", "signedurl", "presigned"],
+    "form_signature": ["policy", "ossaccesskeyid", "formdata"],
+    # upload_credential_api
+    "upload_credential": ["upload-credential", "upload_credential", "uploadcredential"],
+    "get_credential": ["uploadcredential"],
+    "cred_path": ["/upload/"],
+    "cred_expire": ["credential"],
+    # retry_backoff
+    "failure_count": ["failurecount", "failure_count"],
+    "retry_count": ["retrycount", "retry_count", "attempts", "maxretries"],
+    "backoff": ["backoff", "exponential", "math"],
+    "retry_delay": ["retrydelay", "retryinterval", "failurebasedelay", "basedelay"],
+    # telemetry_egress
+    "otlp": ["otlp", "opentelemetry"],
+    "telemetry": ["telemetry"],
+    "track_event": ["trackevent", "reportevent", "logevent", "analytics.track"],
+    "apm": ["sentry", "arms.aliyun", "apm.", "bugsnag"],
+    # global_config_collection
+    "global_instructions": ["global-instructions", "global_instructions"],
+    "global_settings": ["global-settings", "global_settings"],
+    "app_memory": ["app-memory", "appmemory"],
+    "extra_manifest": ["manifest"],
+    "cross_workspace": ["crossworkspace", "cross_workspace", "cross-workspace", "workspacekey"],
+    # git_history_access
+    "git_internals": [".git/", ".git\\"],
+    "reflog": ["reflog", "rev-list", "rev-parse"],
+    "log_all": ["--all", "cat-file"],
+    "lfs_cache": [".git/lfs", "lfs/objects", ".git\\lfs", "lfs\\objects"],
+    # credential_access
+    "ssh_keys": [".ssh/", ".ssh\\", "id_rsa", "id_ed25519", "authorized_keys"],
+    "cloud_creds": [".aws/", ".aws\\", "gcloud", ".kube", ".azure"],
+    "pkg_tokens": [".npmrc", ".git-credentials", ".netrc", ".pypirc", "pip.conf"],
+    "keychain": ["keytar", "safestorage", "credentialmanager", "secretservice",
+                 "secret_service", "secret-service"],
+    # shell_execution
+    "node_child": ["child_process", "spawnsync", "execsync", "execfile"],
+    "py_subprocess": ["subprocess."],
+    "os_system": ["os.system(", "os.popen("],
+    # browser_state_access
+    "cookie_decrypt": ["cookie"],
+    "login_data": ["login data", "local state", "cookies", "network/cookies"],
+    "profile_dir": ["user data", "browser_profile", "browser-profile", "browserprofile"],
+}
+
+
+def _build_prefilter():
+    missing = []
+    kws = set()
+    for cap in _COMPILED_CAPS:
+        for pat in cap["patterns"]:
+            ks = PATTERN_KEYWORDS.get(pat["id"])
+            if not ks:
+                missing.append(pat["id"])
+            else:
+                kws.update(k.lower() for k in ks)
+    if missing:
+        raise RuntimeError("预筛表缺少 pattern，会导致漏报，拒绝启动：%s" % missing)
+    return re.compile("|".join(re.escape(k) for k in sorted(kws, key=len, reverse=True)), re.I)
+
+
+_KW_FILTER = _build_prefilter()
+
+
 def classify_file(rel_path, bundled=False):
     """按路径给文件归类——决定它的证据值多少钱。
 
@@ -1320,6 +1440,12 @@ def scan_text_for_capabilities(rel_path, text, lang, bundled=False):
     """
     if not text:
         return []
+
+    # ---- 预筛：不命中任何关键词就直接返回 ----
+    # 这一步把「每文件 54 个正则」降到「每文件 1 个正则」，是最大的性能杠杆。
+    if _KW_FILTER.search(text) is None:
+        return []
+
     segs = lex_regions(text, lang)
     starts = line_starts_index(text)
     fclass = classify_file(rel_path, bundled=bundled)
@@ -1360,57 +1486,90 @@ def scan_text_for_capabilities(rel_path, text, lang, bundled=False):
     return raw
 
 
-def aggregate_capabilities(raw_hits):
-    """把原始命中聚合成能力画像。
+class CapabilityAccumulator:
+    """边扫边聚合，避免把所有命中都堆在内存里。
 
-    聚合逻辑（按模式分组，每个模式只贡献一次）：
-      1. 对每个 (能力, 模式) 取所有命中的**最高基础分**作为该模式代表强度
-         —— 基础分已含 区域系数(code/string/comment) × 文件类别系数(生产/文档/携带)
-      2. 乘上多样性系数（见 GRADE_THRESHOLDS 上方的说明）
-      3. 能力总分 = 各模式贡献之和
+    为什么需要它：22878 个文件的 asar 会产生近 7000 条命中，
+    每条含 snippet(~260 字符) + ctx(~700 字符) 加其余字段，约 1.2 KB，
+    光这一项就是 8 MB 级；再加上每个文件解码出的全文与中间对象，
+    峰值远超必要水平。
 
-    为什么一个模式只算一次：能力判定问的是「有没有这种能力」。
-    「一个大段复制的代码」和「散落在几十个文件里的常规调用」都不应该刷分。
+    聚合后内存降到 O(模式数 × 样本数)——54 个模式 × 3 条样本，
+    与扫描了多少文件无关。
     """
-    buckets = {}   # (cap, pat) -> 该模式的所有命中
-    for h in raw_hits:
-        buckets.setdefault((h["cap"], h["pat"]), []).append(h)
 
+    SAMPLE_PER_PATTERN = 3
+
+    def __init__(self):
+        self.buckets = {}   # (cap_id, pat_id) -> 该模式的累计与代表证据
+        self.total_hits = 0
+
+    def add(self, hits):
+        self.total_hits += len(hits)
+        for h in hits:
+            key = (h["cap"], h["pat"])
+            b = self.buckets.get(key)
+            if b is None:
+                b = self.buckets[key] = {
+                    "cap": h["cap"], "pat": h["pat"],
+                    "name": h["cap_name"], "risk": h["cap_risk"], "desc": h["cap_desc"],
+                    "max_base": 0.0, "max_weight": 0, "count": 0,
+                    "files": set(), "samples": [],
+                    "auto": 0, "user": 0, "strong_in_prod": False,
+                }
+            if h["base_score"] > b["max_base"]:
+                b["max_base"] = h["base_score"]
+            if h["weight"] > b["max_weight"]:
+                b["max_weight"] = h["weight"]
+            b["count"] += 1
+            b["files"].add(h["file"])
+
+            if (h["weight"] >= 9 and h["region"] in (TK_CODE, TK_STRING)
+                    and h["file_class"] in ("production", "config")):
+                b["strong_in_prod"] = True
+
+            scope = h.get("ctx") or h.get("snippet", "")
+            if AUTO_SIGNALS.search(scope):
+                b["auto"] += 1
+            if USER_SIGNALS.search(scope):
+                b["user"] += 1
+
+            s = b["samples"]
+            if len(s) < self.SAMPLE_PER_PATTERN:
+                s.append(h)
+            else:
+                # 只留最强的前 N 条——注意这只影响**展示**，
+                # 分数与触发推断用的是全量计数（见下）
+                s.sort(key=lambda x: -x["base_score"])
+                if h["base_score"] > s[-1]["base_score"]:
+                    s[-1] = h
+
+
+def aggregate_from_buckets(acc):
+    """从累加器聚合能力画像（内存友好路径）。"""
     caps = {}
-    for (cid, pid), items in buckets.items():
-        max_base = max(x["base_score"] for x in items)
-        n_files = len({x["file"] for x in items})
+    for (cid, _pid), b in acc.buckets.items():
+        n_files = len(b["files"])
         diversity = 0.85 + 0.15 * min(n_files, 5) / 5.0
-        contrib = max_base * diversity
+        contrib = b["max_base"] * diversity
 
-        sample = items[0]
         c = caps.setdefault(cid, {
-            "id": cid, "name": sample["cap_name"], "risk": sample["cap_risk"],
-            "desc": sample["cap_desc"],
+            "id": cid, "name": b["name"], "risk": b["risk"], "desc": b["desc"],
             "score": 0.0, "patterns": set(), "files": set(),
             "max_weight": 0, "strong_in_prod": False, "hits": [], "hit_total": 0,
             "auto_signals": 0, "user_signals": 0,
         })
         c["score"] += contrib
-        c["patterns"].add(pid)
-        c["hit_total"] += len(items)
-        for x in items:
-            c["files"].add(x["file"])
-            if x["weight"] > c["max_weight"]:
-                c["max_weight"] = x["weight"]
-            if (x["weight"] >= 9 and x["region"] in (TK_CODE, TK_STRING)
-                    and x["file_class"] in ("production", "config")):
-                c["strong_in_prod"] = True
-            # 触发信号统计用**全部命中**，不是截断后的代表证据——
-            # 只看 3 条样本会把推断变成掷骰子
-            scope = x.get("ctx") or x.get("snippet", "")
-            if AUTO_SIGNALS.search(scope):
-                c["auto_signals"] += 1
-            if USER_SIGNALS.search(scope):
-                c["user_signals"] += 1
-
-        # 每个模式只保留最强的前 3 条作为代表证据，避免证据列表爆炸
-        for x in sorted(items, key=lambda y: -y["base_score"])[:3]:
+        c["patterns"].add(b["pat"])
+        c["hit_total"] += b["count"]
+        c["files"].update(b["files"])
+        c["auto_signals"] += b["auto"]
+        c["user_signals"] += b["user"]
+        if b["max_weight"] > c["max_weight"]:
+            c["max_weight"] = b["max_weight"]
+        if b["strong_in_prod"]:
+            c["strong_in_prod"] = True
+        for x in b["samples"]:
             x = dict(x)
             x["score"] = round(contrib, 2)
             c["hits"].append(x)
@@ -1444,6 +1603,17 @@ def aggregate_capabilities(raw_hits):
                                -CAP_RISK_WEIGHT.get(c["risk"], 1),
                                -c["score"]))
     return graded
+
+
+def aggregate_capabilities(raw_hits):
+    """兼容入口：直接从命中列表聚合（小目标用，大目标请走累加器）。
+
+    聚合逻辑见 aggregate_from_buckets —— 核心是「按模式聚合，一个模式只贡献一次」，
+    分数因而有界，不随仓库规模膨胀。
+    """
+    acc = CapabilityAccumulator()
+    acc.add(raw_hits)
+    return aggregate_from_buckets(acc)
 
 
 def infer_trigger_counts(auto, user):
@@ -1498,11 +1668,19 @@ def summarize_capabilities(caps):
     }
 
 
-def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024):
-    """审计一个路径（目录或 asar 文件），返回原始命中与元信息。"""
+def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024, acc=None,
+               include_vendor=False):
+    """审计一个路径（目录或 asar 文件）。
+
+    acc 不为 None 时，命中直接喂给累加器，函数本身不累积命中列表——
+    这是大目标（几万个文件）的内存友好路径。返回值里的 hits 此时为空。
+
+    include_vendor=False（默认）会跳过 node_modules / vendor 等第三方依赖区，
+    理由见 M3_VENDOR_PARTS 的注释。
+    """
     hits = []
     meta = {"path": path, "kind": "dir", "files_scanned": 0, "bytes_scanned": 0,
-            "skipped_large": 0, "errors": [], "asar": None}
+            "skipped_large": 0, "skipped_vendor": 0, "errors": [], "asar": None}
 
     targets = []   # (rel_path, lang, reader)
 
@@ -1520,6 +1698,9 @@ def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024):
                 break
             lang = detect_lang(rel)
             if lang in ("other",) or rel.endswith((".map", ".min.js", ".min.css")):
+                continue
+            if not include_vendor and any(v in _norm(rel) for v in M3_VENDOR_PARTS):
+                meta["skipped_vendor"] += 1
                 continue
             size = int(item.get("size", 0) or 0)
             if size > max_file_bytes:
@@ -1546,11 +1727,14 @@ def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024):
                             lang = detect_lang(e.path)
                             if lang in ("other",) or e.name.endswith((".map", ".min.js", ".min.css")):
                                 continue
+                            rel = os.path.relpath(e.path, path)
+                            if not include_vendor and any(v in _norm(rel) for v in M3_VENDOR_PARTS):
+                                meta["skipped_vendor"] += 1
+                                continue
                             sz = e.stat(follow_symlinks=False).st_size
                             if sz > max_file_bytes:
                                 meta["skipped_large"] += 1
                                 continue
-                            rel = os.path.relpath(e.path, path)
                             targets.append((rel, lang, ("fs", e.path, None, None)))
                     except OSError:
                         continue
@@ -1573,13 +1757,18 @@ def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024):
             continue
         meta["files_scanned"] += 1
         meta["bytes_scanned"] += len(blob)
-        hits.extend(scan_text_for_capabilities(rel, text, lang,
-                                               bundled=(meta["kind"] == "asar")))
+        file_hits = scan_text_for_capabilities(rel, text, lang,
+                                               bundled=(meta["kind"] == "asar"))
+        if file_hits:
+            if acc is None:
+                hits.extend(file_hits)
+            else:
+                acc.add(file_hits)
 
     return hits, meta
 
 
-def audit_targets(tool, extra_paths=None, max_files=2500):
+def audit_targets(tool, extra_paths=None, max_files=2500, include_vendor=False):
     """对一个工具做 M3 静态审计：自动定位客户端 + 指定的路径。"""
     paths = list(extra_paths or [])
 
@@ -1596,26 +1785,23 @@ def audit_targets(tool, extra_paths=None, max_files=2500):
 
     seen = set()
     results = []
-    all_hits = []
+    acc = CapabilityAccumulator()
     for p in paths:
         rp = os.path.normpath(p)
         if rp in seen or not os.path.exists(rp):
             continue
         seen.add(rp)
-        hits, meta = audit_path(rp, max_files=max_files)
-        if not hits and meta.get("errors") and not meta.get("files_scanned"):
-            results.append(meta)
-            continue
-        all_hits.extend(hits)
+        _hits, meta = audit_path(rp, max_files=max_files, acc=acc,
+                                 include_vendor=include_vendor)
         results.append(meta)
 
-    caps = aggregate_capabilities(all_hits)
+    caps = aggregate_from_buckets(acc)
     summary = summarize_capabilities(caps)
     return {
         "targets": results,
         "capabilities": caps,
         "summary": summary,
-        "total_hits": len(all_hits),
+        "total_hits": acc.total_hits,
         "files_scanned": sum(r.get("files_scanned", 0) for r in results),
         "bytes_scanned": sum(r.get("bytes_scanned", 0) for r in results),
     }
@@ -1651,6 +1837,7 @@ def json_static(st):
             "files_scanned": t.get("files_scanned"),
             "bytes_scanned": t.get("bytes_scanned"),
             "skipped_large": t.get("skipped_large"),
+            "skipped_vendor": t.get("skipped_vendor"),
             "asar": t.get("asar"),
             "errors": (t.get("errors") or [])[:10],
         } for t in st["targets"]],
@@ -1762,6 +1949,9 @@ def render_text(results, meta):
             L.append("    扫描 %d 个文件 / %s  |  已确认 %d / 疑似 %d / 弱信号 %d"
                      % (st["files_scanned"], human(st["bytes_scanned"]),
                         sm["confirmed"], sm["likely"], sm["possible"]))
+            sv = sum(t.get("skipped_vendor", 0) for t in st["targets"])
+            if sv:
+                L.append("    （已跳过 %d 个第三方依赖文件——它们的能力不算作本客户端的能力）" % sv)
             tmap = {"automatic": "自动", "user_initiated": "用户主动",
                     "mixed": "混合", "unknown": "未判定"}
             for c in st["capabilities"]:
@@ -2263,14 +2453,16 @@ def render_html(results, meta):
         st = r.get("static")
         if st:
             sm = st["summary"]
+            sv = sum(t.get("skipped_vendor", 0) for t in st["targets"])
+            vendor_note = ("；已跳过 %d 个第三方依赖文件（它们的能力不算作本客户端的能力）" % sv) if sv else ""
             P.append('<div class="sec"><h3>外传能力画像（M3 静态审计）</h3>')
             P.append('<div class="why %s"><b>%s</b> — 已确认 %d / 疑似 %d / 弱信号 %d'
                      '<br><span class="muted small">'
-                     '扫描 %d 个文件 / %s；判定依据是「能力」而非「当前行为」'
+                     '扫描 %d 个文件 / %s%s；判定依据是「能力」而非「当前行为」'
                      '</span></div>'
                      % ("crit" if sm["verdict"] == "high" else ("med" if sm["verdict"] in ("elevated", "medium") else ""),
                         esc(sm["text"]), sm["confirmed"], sm["likely"], sm["possible"],
-                        st["files_scanned"], esc(human(st["bytes_scanned"]))))
+                        st["files_scanned"], esc(human(st["bytes_scanned"])), esc(vendor_note)))
 
             shown = [c for c in st["capabilities"] if c["level"] != "absent"]
             if shown:
@@ -2351,6 +2543,9 @@ def main():
                     help="M3 审计目标：目录或 app.asar 路径，可重复")
     ap.add_argument("--static-max-files", type=int, default=2500,
                     help="M3 单目标最多扫描文件数（默认 2500）")
+    ap.add_argument("--include-vendor", action="store_true",
+                    help="M3 也扫描 node_modules / vendor 等第三方依赖区"
+                         "（默认跳过；打开后扫描量约增 5 倍，且会把第三方库的能力算进来）")
     ap.add_argument("-m", "--markdown", help="输出 Markdown 报告到文件")
     ap.add_argument("-j", "--json", help="输出 JSON 报告到文件")
     ap.add_argument("-H", "--html", help="输出单文件 HTML 报告到文件（自包含，可离线打开）")
@@ -2387,7 +2582,8 @@ def main():
         custom = list(args.static_path or [])
         if custom:
             st = audit_targets({"audit_paths": []}, extra_paths=custom,
-                               max_files=args.static_max_files)
+                               max_files=args.static_max_files,
+                               include_vendor=args.include_vendor)
             if st["targets"]:
                 sm = st["summary"]
                 results.append({
@@ -2410,7 +2606,8 @@ def main():
                 if not any(os.path.exists(expand(p)) for p in t.get("audit_paths", [])):
                     continue
                 try:
-                    entry["static"] = audit_targets(t, max_files=args.static_max_files)
+                    entry["static"] = audit_targets(t, max_files=args.static_max_files,
+                                                    include_vendor=args.include_vendor)
                 except Exception as e:
                     entry["reasons"].append("M3 静态审计异常：%s" % e)
                     continue
