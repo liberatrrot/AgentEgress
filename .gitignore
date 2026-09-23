@@ -1,0 +1,15 @@
+# 扫描产物（每次运行都变，不进版本库）
+reports/
+!reports/.gitkeep
+
+# 参考样本（外部克隆的仓库，自带 git 历史，不嵌套管理）
+refs/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# 临时文件
+*.tmp
+*.bak
+~$*
