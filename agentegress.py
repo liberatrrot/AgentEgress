@@ -39,7 +39,7 @@ import bisect
 import struct
 import argparse
 
-VERSION = "0.2.0"
+VERSION = "0.2.2"
 
 SKIP_DIRS = {"node_modules", "__pycache__", ".venv", "venv", "site-packages", ".mypy_cache"}
 
@@ -818,6 +818,29 @@ def extract_line(text, pos):
     return line[:200]
 
 
+def decode_bytes(blob):
+    """把文件字节解成文本，处理 UTF-8 / UTF-16 BOM 与无 BOM 的 UTF-16。
+
+    为什么需要：`decode("utf-8", "ignore")` 会把 UTF-16 文件里的非 ASCII 字节全部丢弃，
+    于是一个 UTF-16 的脚本会「静默零命中」——等于整类文件对审计不可见。
+    评审实测：同一段含 upload-credential + createCipheriv 的文本，
+    UTF-8 版命中 3 处，UTF-16LE 版命中 0 处。Windows 上的 .ps1 常是 UTF-16。
+    """
+    if not blob:
+        return ""
+    if blob.startswith(b"\xef\xbb\xbf"):
+        return blob[3:].decode("utf-8", "ignore")
+    if blob.startswith(b"\xff\xfe"):
+        return blob[2:].decode("utf-16-le", "ignore")
+    if blob.startswith(b"\xfe\xff"):
+        return blob[2:].decode("utf-16-be", "ignore")
+    head = blob[:4096]
+    if head and head.count(0) > len(head) * 0.2:
+        # 无 BOM 但 NUL 占比很高，基本可判为 UTF-16LE
+        return blob.decode("utf-16-le", "ignore")
+    return blob.decode("utf-8", "ignore")
+
+
 def line_starts_index(text):
     """预计算每行起始偏移，供二分查找。
 
@@ -924,11 +947,21 @@ class AsarArchive:
                 yield p, item
 
     def read(self, rel_path, item, max_bytes=8 * 1024 * 1024):
-        """按需读取一个文件的内容（受 max_bytes 限制）。"""
+        """按需读取一个文件的内容（受 max_bytes 限制）。
+
+        安全：unpacked 条目必须做路径穿越校验。
+        本工具的设计目标就是「审一个可能恶意的客户端」，所以它必定在不可信输入上
+        解析 asar——归档目录树里的文件名可以写成 `../../某文件`，
+        若直接 os.path.join 就会读到归档之外。评审实测确认可利用。
+        """
         if item.get("unpacked"):
-            fp = os.path.join(self.unpacked_dir, rel_path.lstrip("/").replace("/", os.sep))
+            safe_rel = rel_path.lstrip("/").replace("/", os.sep)
+            root = os.path.realpath(self.unpacked_dir)
+            target = os.path.realpath(os.path.join(root, safe_rel))
+            if target != root and not target.startswith(root + os.sep):
+                raise AsarError("归档条目路径越界，拒绝读取：%s" % rel_path)
             try:
-                with open(fp, "rb") as f:
+                with open(target, "rb") as f:
                     return f.read(max_bytes)
             except OSError:
                 return None
@@ -937,13 +970,15 @@ class AsarArchive:
             size = int(item.get("size", 0))
         except (TypeError, ValueError):
             return None
-        if size <= 0:
-            return b""
+        if size <= 0 or off < 0:
+            return None
         try:
             with open(self.path, "rb") as f:
                 f.seek(self.base + off)
                 return f.read(min(size, max_bytes))
-        except OSError:
+        except (OSError, ValueError):
+            # POSIX 下对负绝对偏移 seek 抛 ValueError；这里一并吞掉，
+            # 否则一个畸形归档就能打断整轮扫描
             return None
 
 
@@ -993,7 +1028,7 @@ CAPABILITY_DEFS = [
              "note": "仓库快照标识"},
             {"id": "snap_manifest", "re": r"snapshot[_-]?manifest", "region": "string", "w": 8,
              "note": "快照清单结构名"},
-            {"id": "kind_baseline", "re": r"kind\W{0,4}(baseline|full|incremental)", "region": "any", "w": 7,
+            {"id": "kind_baseline", "re": r"kind\W{0,4}(baseline|incremental)", "region": "any", "w": 7,
              "note": "快照类型标记"},
             {"id": "capture_hook", "re": r"captureBefore\w*|captureSnapshot|captureWorkspace", "region": "code", "w": 8,
              "note": "快照捕获钩子"},
@@ -1085,7 +1120,7 @@ CAPABILITY_DEFS = [
              "note": "失败计数"},
             {"id": "retry_count", "re": r"retryCount|retry_count|attempts|maxRetries", "region": "code", "w": 6,
              "note": "重试计数"},
-            {"id": "backoff", "re": r"backoff|exponential|2\s*\*\*\s*Math", "region": "any", "w": 7,
+            {"id": "backoff", "re": r"backoff|exponential", "region": "any", "w": 7,
              "note": "退避策略"},
             {"id": "retry_delay", "re": r"retryDelay|retryInterval|failureBaseDelay|baseDelay", "region": "code", "w": 8,
              "note": "重试间隔配置"},
@@ -1169,6 +1204,10 @@ CAPABILITY_DEFS = [
              "note": "Python 子进程"},
             {"id": "os_system", "re": r"os\.system\(|os\.popen\(", "region": "code", "w": 5,
              "note": "系统调用"},
+            {"id": "pty_spawn", "re": r"pty\.spawn|node-pty|openpty|forkpty", "region": "any", "w": 7,
+             "note": "伪终端 spawn"},
+            {"id": "shell_invoke", "re": r"shell\.(exec|run)|ShellExecute|CreateProcess|exec\.Command",
+             "region": "any", "w": 6, "note": "跨平台命令执行"},
         ],
     },
     {
@@ -1276,12 +1315,18 @@ _COMPILED_CAPS = _compile_capabilities()
 #      严格才会漏报。
 PATTERN_KEYWORDS = {
     # workspace_snapshot
+    #
+    # 关键词收窄原则：能写多具体就写多具体。评审实测过旧表的问题——
+    # 通过率 59.4% 而其中 62.7% 零命中，最廉价的 `math` 能匹配 58/298 个文件。
+    # 预筛的价值取决于「跳过了多少字节」，廉价关键词等于没筛。
     "snap_api_path": ["snapshot/upload"],
-    "repo_snapshot": ["snapshot"],
-    "snap_manifest": ["manifest"],
-    "kind_baseline": ["baseline", "incremental", "full"],
-    "capture_hook": ["capture"],
-    "ckpt_service": ["checkpoint", "snapshot"],
+    "repo_snapshot": ["reposnapshot", "repo_snapshot", "repo-snapshot"],
+    "snap_manifest": ["snapshotmanifest", "snapshot_manifest", "snapshot-manifest"],
+    "kind_baseline": ["baseline", "incremental"],
+    "capture_hook": ["capturebefore", "capturesnapshot", "captureworkspace"],
+    "ckpt_service": ["checkpointmanager", "checkpointservice", "checkpointuploader",
+                     "checkpointstore", "snapshotmanager", "snapshotservice",
+                     "snapshotuploader", "snapshotstore"],
     # bulk_archive
     "tar_create": ["tar.", "creategzip", "createbrotli"],
     "archiver": ["archiver", "yazl", "zip.file"],
@@ -1302,16 +1347,20 @@ PATTERN_KEYWORDS = {
     "aws_s3": ["amazonaws", "x-amz-signature"],
     "post_object": ["postobject", "putobject", "multipartupload", "uploadobject"],
     "upload_url": ["uploadurl", "upload_url", "signedurl", "presigned"],
-    "form_signature": ["policy", "ossaccesskeyid", "formdata"],
+    # 原含裸 "policy"（13/298）。正则的判别性部分其实是 signature/base64，
+    # policy 只是它们的上下文，不需要进预筛。
+    "form_signature": ["signature", "base64", "ossaccesskeyid", "formdata"],
     # upload_credential_api
     "upload_credential": ["upload-credential", "upload_credential", "uploadcredential"],
     "get_credential": ["uploadcredential"],
     "cred_path": ["/upload/"],
-    "cred_expire": ["credential"],
+    # 原为裸 "credential"（42/298 个文件命中，几乎等于没筛）。
+    # 正则要求 credential 后 30 字符内出现 expire/ttl/deadline —— 这三个词才是判别性的。
+    "cred_expire": ["expire", "ttl", "deadline"],
     # retry_backoff
     "failure_count": ["failurecount", "failure_count"],
     "retry_count": ["retrycount", "retry_count", "attempts", "maxretries"],
-    "backoff": ["backoff", "exponential", "math"],
+    "backoff": ["backoff", "exponential"],
     "retry_delay": ["retrydelay", "retryinterval", "failurebasedelay", "basedelay"],
     # telemetry_egress
     "otlp": ["otlp", "opentelemetry"],
@@ -1322,7 +1371,7 @@ PATTERN_KEYWORDS = {
     "global_instructions": ["global-instructions", "global_instructions"],
     "global_settings": ["global-settings", "global_settings"],
     "app_memory": ["app-memory", "appmemory"],
-    "extra_manifest": ["manifest"],
+    "extra_manifest": ["extramanifest", "extra_manifest", "extra-manifest"],
     "cross_workspace": ["crossworkspace", "cross_workspace", "cross-workspace", "workspacekey"],
     # git_history_access
     "git_internals": [".git/", ".git\\"],
@@ -1339,6 +1388,8 @@ PATTERN_KEYWORDS = {
     "node_child": ["child_process", "spawnsync", "execsync", "execfile"],
     "py_subprocess": ["subprocess."],
     "os_system": ["os.system(", "os.popen("],
+    "pty_spawn": ["pty.spawn", "node-pty", "openpty", "forkpty"],
+    "shell_invoke": ["shell.exec", "shell.run", "shellexecute", "createprocess", "exec.command"],
     # browser_state_access
     "cookie_decrypt": ["cookie"],
     "login_data": ["login data", "local state", "cookies", "network/cookies"],
@@ -1362,6 +1413,122 @@ def _build_prefilter():
 
 
 _KW_FILTER = _build_prefilter()
+
+
+def _check_weight_ceiling():
+    """启动自检：每个能力的「模式权重和」必须 ≥ confirmed 的分数阈值。
+
+    为什么需要：单个模式的贡献 ≤ 它自己的权重（基础分 = 权重 × 区域系数 × 文件类别系数，
+    两个系数都 ≤1），所以**能力总分上限 = 该能力所有模式的权重和**。
+    若某能力的权重和低于 confirmed 阈值，它在数学上永远不可能被判为 confirmed，
+    不管证据多强——这与证据强度无关，纯属权重表的算术缺陷。
+
+    这个问题真实发生过：评审发现 shell_execution 的权重和是 17，而 confirmed 阈值是 18，
+    即「能执行命令」这个能力永远上不了最高档。修法是补模式，并加这道自检防止复发。
+    """
+    need = GRADE_THRESHOLDS[0][1]["score"]
+    short = []
+    for cap in CAPABILITY_DEFS:
+        total = sum(p["w"] for p in cap["patterns"])
+        if total < need:
+            short.append("%s(权重和=%.0f)" % (cap["id"], total))
+    if short:
+        raise RuntimeError(
+            "以下能力的模式权重和低于 confirmed 阈值 %.0f，将永远无法判定为 confirmed：%s"
+            % (need, "、".join(short)))
+    return True
+
+
+_WEIGHT_CEILING_OK = _check_weight_ceiling()
+
+
+def _regex_sample(pat_str):
+    """尽力从正则生成一个「最小匹配串」；无法生成时返回 None。
+
+    用途见 _check_keyword_consistency。用 CPython 的 re._parser 语法树，
+    对每种节点产出最短的代表性文本。
+    （第一版自检用「关键词能否单独匹配正则」来判断，是错的——
+      关键词是「文本中必须出现的子串」，不是「能被正则独立匹配的串」，
+      于是 `kind\\W{0,4}(baseline|incremental)` 会因为单独测 "baseline" 不匹配而误报。）
+    """
+    try:
+        from re import _parser as _rp
+    except ImportError:
+        return None
+
+    def in_class(av):
+        for o, a in av:
+            n = str(o)
+            if n == "LITERAL":
+                return chr(a)
+            if n == "RANGE":
+                return chr(a[0])
+        return "a"
+
+    def walk(sub, depth=0):
+        if depth > 12:
+            return ""
+        try:
+            items = list(sub)
+        except TypeError:
+            return ""
+        out = []
+        for op, av in items:
+            n = str(op)
+            if n == "LITERAL":
+                out.append(chr(av))
+            elif n == "NOT_LITERAL":
+                out.append("a")
+            elif n == "IN":
+                out.append(in_class(av))
+            elif n in ("MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT"):
+                out.append(walk(av[2], depth + 1) * max(int(av[0]), 0))
+            elif n == "SUBPATTERN":
+                out.append(walk(av[3], depth + 1))
+            elif n == "BRANCH":
+                out.append(walk(av[1][0], depth + 1))
+            elif n in ("ANY", "CATEGORY"):
+                out.append("a")
+            # AT / GROUPREF / 其它：无字符产出
+        return "".join(out)
+
+    try:
+        parsed = _rp.parse(pat_str, 0)
+    except Exception:
+        return None
+    s = walk(parsed)
+    return s or None
+
+
+def _check_keyword_consistency():
+    """启动自检：预筛表的不变式「正则匹配 ⇒ 关键词命中」。
+
+    做法：为每条正则生成一个最小匹配串，验证预筛过滤器会放行它。
+    放行不了就说明这条 pattern 的证据会被预筛永久挡掉——那是**漏报**。
+
+    这是把评审提出的「不变式只靠人工核对」变成机器可验证的一步。
+    """
+    bad, unverifiable = [], []
+    for cap in _COMPILED_CAPS:
+        for pat in cap["patterns"]:
+            sample = _regex_sample(pat["re"].pattern)
+            if not sample:
+                unverifiable.append(pat["id"])
+                continue
+            # 生成串必须真的能被该正则匹配（否则说明生成器本身不可靠）
+            if pat["re"].search(sample) is None:
+                unverifiable.append(pat["id"])
+                continue
+            if _KW_FILTER.search(sample) is None:
+                bad.append("%s(样例=%r)" % (pat["id"], sample[:40]))
+    if bad:
+        raise RuntimeError(
+            "以下 pattern 的匹配串会被预筛挡掉，将导致永久漏报：%s" % "、".join(bad))
+    return {"unverifiable": unverifiable}
+
+
+_KEYWORD_CONSISTENCY = _check_keyword_consistency()
+_KEYWORD_CONSISTENCY_OK = True
 
 
 def classify_file(rel_path, bundled=False):
@@ -1631,8 +1798,14 @@ def infer_trigger_counts(auto, user):
     return {"verdict": "mixed", "auto": auto, "user": user}
 
 
-def summarize_capabilities(caps):
-    """整体定性——给一个可读的结论，不给假的精确数字。"""
+def summarize_capabilities(caps, coverage=None):
+    """整体定性——给一个可读的结论，不给假的精确数字。
+
+    coverage 不为空时会检查「有没有因为技术原因没扫到的地方」。
+    这是必要的：一个把上传逻辑放进超大 bundle / 被截断目录的客户端，
+    同样会得到「未发现显著外传能力」，而那份结论的确定性外观与真正扫全时毫无差别。
+    把漏报包装成干净结论，比报错更伤人——它会让用户主动关闭自己的怀疑。
+    """
     confirmed = [c for c in caps if c["level"] == "confirmed"]
     likely = [c for c in caps if c["level"] == "likely"]
     high_conf = [c for c in confirmed if c["risk"] == "high"]
@@ -1657,6 +1830,19 @@ def summarize_capabilities(caps):
         verdict = "info"
         text = "未发现显著外传能力"
 
+    # —— 覆盖不足时给结论加限定，必要时直接降级 ——
+    if coverage:
+        miss = coverage.get("skipped_large", 0) + (1 if coverage.get("truncated") else 0)
+        cand = max(1, coverage.get("candidates", 0))
+        if coverage.get("truncated"):
+            verdict = "info"
+            text = "扫描被截断（未覆盖全部候选文件），结论不可用"
+        elif miss / cand > 0.05:
+            verdict = "info"
+            text = "有 %.1f%% 的候选文件未覆盖（体积超限或读取失败），结论不可用" % (100.0 * miss / cand)
+        elif miss:
+            text += "（注意：%d 个文件未覆盖，详见覆盖台账）" % miss
+
     return {
         "verdict": verdict,
         "text": text,
@@ -1680,7 +1866,8 @@ def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024, acc=None,
     """
     hits = []
     meta = {"path": path, "kind": "dir", "files_scanned": 0, "bytes_scanned": 0,
-            "skipped_large": 0, "skipped_vendor": 0, "errors": [], "asar": None}
+            "candidates": 0, "skipped_large": 0, "skipped_vendor": 0,
+            "skipped_ext": 0, "truncated": False, "errors": [], "asar": None}
 
     targets = []   # (rel_path, lang, reader)
 
@@ -1694,10 +1881,15 @@ def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024, acc=None,
         meta["asar"] = {"tree_entries": sum(1 for _ in ar.iter_files())}
         for rel, item in ar.iter_files():
             if len(targets) >= 60000:
+                meta["truncated"] = True
                 meta["errors"].append("归档可扫文件数超过 60000，已截断")
                 break
             lang = detect_lang(rel)
-            if lang in ("other",) or rel.endswith((".map", ".min.js", ".min.css")):
+            if lang in ("other",):
+                continue
+            meta["candidates"] += 1
+            if rel.endswith((".map", ".min.js", ".min.css")):
+                meta["skipped_ext"] += 1
                 continue
             if not include_vendor and any(v in _norm(rel) for v in M3_VENDOR_PARTS):
                 meta["skipped_vendor"] += 1
@@ -1709,35 +1901,50 @@ def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024, acc=None,
             targets.append((rel, lang, ("asar", ar, rel, item)))
     elif os.path.isdir(path):
         stack = [path]
-        while stack and len(targets) < max_files:
+        truncated = False
+        while stack:
+            if len(targets) >= max_files:
+                truncated = True
+                break
             d = stack.pop()
             try:
-                it = os.scandir(d)
+                # 排序保证扫描顺序可复现（否则「哪 2500 个被扫」依赖文件系统返回顺序，
+                # 同一台机器两次运行都可能不同）
+                entries = sorted(os.scandir(d), key=lambda x: x.name)
             except OSError as e:
                 meta["errors"].append(str(e))
                 continue
-            with it:
-                for e in it:
-                    try:
-                        if e.is_dir(follow_symlinks=False):
-                            if e.name in SKIP_DIRS:
-                                continue
-                            stack.append(e.path)
-                        elif e.is_file(follow_symlinks=False):
-                            lang = detect_lang(e.path)
-                            if lang in ("other",) or e.name.endswith((".map", ".min.js", ".min.css")):
-                                continue
-                            rel = os.path.relpath(e.path, path)
-                            if not include_vendor and any(v in _norm(rel) for v in M3_VENDOR_PARTS):
-                                meta["skipped_vendor"] += 1
-                                continue
-                            sz = e.stat(follow_symlinks=False).st_size
-                            if sz > max_file_bytes:
-                                meta["skipped_large"] += 1
-                                continue
-                            targets.append((rel, lang, ("fs", e.path, None, None)))
-                    except OSError:
-                        continue
+            for e in entries:
+                if len(targets) >= max_files:
+                    truncated = True
+                    break
+                try:
+                    if e.is_dir(follow_symlinks=False):
+                        if e.name in SKIP_DIRS:
+                            continue
+                        stack.append(e.path)
+                    elif e.is_file(follow_symlinks=False):
+                        lang = detect_lang(e.path)
+                        if lang in ("other",):
+                            continue
+                        meta["candidates"] += 1
+                        if e.name.endswith((".map", ".min.js", ".min.css")):
+                            meta["skipped_ext"] += 1
+                            continue
+                        rel = os.path.relpath(e.path, path)
+                        if not include_vendor and any(v in _norm(rel) for v in M3_VENDOR_PARTS):
+                            meta["skipped_vendor"] += 1
+                            continue
+                        sz = e.stat(follow_symlinks=False).st_size
+                        if sz > max_file_bytes:
+                            meta["skipped_large"] += 1
+                            continue
+                        targets.append((rel, lang, ("fs", e.path, None, None)))
+                except OSError:
+                    continue
+        if truncated:
+            meta["truncated"] = True
+            meta["errors"].append("达到 max_files=%d 上限，剩余文件未扫描" % max_files)
     else:
         meta["errors"].append("路径不存在")
         return hits, meta
@@ -1751,8 +1958,8 @@ def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024, acc=None,
                     blob = f.read(max_file_bytes)
             if not blob:
                 continue
-            text = blob.decode("utf-8", "ignore")
-        except (OSError, AsarError) as e:
+            text = decode_bytes(blob)
+        except (OSError, AsarError, ValueError) as e:
             meta["errors"].append("%s: %s" % (rel, e))
             continue
         meta["files_scanned"] += 1
@@ -1796,13 +2003,35 @@ def audit_targets(tool, extra_paths=None, max_files=2500, include_vendor=False):
         results.append(meta)
 
     caps = aggregate_from_buckets(acc)
-    summary = summarize_capabilities(caps)
+
+    # 覆盖率台账：把「因为技术原因没看的部分」显式记下来。
+    # 这是本工具最容易骗人的地方——「未检出」和「已扫全」在报告里长得一样，
+    # 而实际上一个把上传逻辑放进 .min.js / 超大 bundle / UTF-16 文件的客户端，
+    # 也会得到一份「未发现显著外传能力」的干净结论。
+    coverage = {
+        "candidates": sum(r.get("candidates", 0) for r in results),
+        "scanned": sum(r.get("files_scanned", 0) for r in results),
+        # by_design：设计上就该跳过的（第三方依赖、压缩产物）——不算缺陷
+        "skipped_vendor": sum(r.get("skipped_vendor", 0) for r in results),
+        "skipped_ext": sum(r.get("skipped_ext", 0) for r in results),
+        # gaps：可能真正漏掉东西的——必须让用户看见
+        "skipped_large": sum(r.get("skipped_large", 0) for r in results),
+        "truncated": any(r.get("truncated") for r in results),
+        "read_errors": sum(len(r.get("errors") or []) for r in results),
+    }
+    coverage["gaps"] = (coverage["skipped_large"]
+                        + (1 if coverage["truncated"] else 0)
+                        + coverage["read_errors"])
+
+    summary = summarize_capabilities(caps, coverage=coverage)
+
     return {
         "targets": results,
         "capabilities": caps,
         "summary": summary,
+        "coverage": coverage,
         "total_hits": acc.total_hits,
-        "files_scanned": sum(r.get("files_scanned", 0) for r in results),
+        "files_scanned": coverage["scanned"],
         "bytes_scanned": sum(r.get("bytes_scanned", 0) for r in results),
     }
 
@@ -1949,9 +2178,19 @@ def render_text(results, meta):
             L.append("    扫描 %d 个文件 / %s  |  已确认 %d / 疑似 %d / 弱信号 %d"
                      % (st["files_scanned"], human(st["bytes_scanned"]),
                         sm["confirmed"], sm["likely"], sm["possible"]))
-            sv = sum(t.get("skipped_vendor", 0) for t in st["targets"])
-            if sv:
-                L.append("    （已跳过 %d 个第三方依赖文件——它们的能力不算作本客户端的能力）" % sv)
+            cov = st.get("coverage") or {}
+            if cov:
+                L.append("    覆盖台账: 候选 %d -> 实扫 %d  |  设计内跳过: 第三方依赖 %d / 压缩产物 %d"
+                         % (cov.get("candidates", 0), cov.get("scanned", 0),
+                            cov.get("skipped_vendor", 0), cov.get("skipped_ext", 0)))
+                if cov.get("gaps"):
+                    L.append("    !! 因技术原因未覆盖 %d 项：大文件 %d / 目录截断 %s / 读取失败 %d"
+                             % (cov["gaps"], cov.get("skipped_large", 0),
+                                "是" if cov.get("truncated") else "否",
+                                cov.get("read_errors", 0)))
+                    L.append("       以上缺口意味着「未检出」≠「已排除」，请结合覆盖台账理解结论")
+                else:
+                    L.append("    因技术原因未覆盖: 0 项")
             tmap = {"automatic": "自动", "user_initiated": "用户主动",
                     "mixed": "混合", "unknown": "未判定"}
             for c in st["capabilities"]:
@@ -2453,16 +2692,37 @@ def render_html(results, meta):
         st = r.get("static")
         if st:
             sm = st["summary"]
-            sv = sum(t.get("skipped_vendor", 0) for t in st["targets"])
-            vendor_note = ("；已跳过 %d 个第三方依赖文件（它们的能力不算作本客户端的能力）" % sv) if sv else ""
+            cov = st.get("coverage") or {}
             P.append('<div class="sec"><h3>外传能力画像（M3 静态审计）</h3>')
             P.append('<div class="why %s"><b>%s</b> — 已确认 %d / 疑似 %d / 弱信号 %d'
                      '<br><span class="muted small">'
-                     '扫描 %d 个文件 / %s%s；判定依据是「能力」而非「当前行为」'
+                     '扫描 %d 个文件 / %s；判定依据是「能力」而非「当前行为」'
                      '</span></div>'
                      % ("crit" if sm["verdict"] == "high" else ("med" if sm["verdict"] in ("elevated", "medium") else ""),
                         esc(sm["text"]), sm["confirmed"], sm["likely"], sm["possible"],
-                        st["files_scanned"], esc(human(st["bytes_scanned"])), esc(vendor_note)))
+                        st["files_scanned"], esc(human(st["bytes_scanned"]))))
+
+            # 覆盖台账：必须在报告里显式出现。
+            # 否则「未发现显著外传能力」和「真的扫全了且没有」在视觉上完全一样，
+            # 那等于把漏报包装成干净结论。
+            if cov:
+                gaps = cov.get("gaps", 0)
+                box = "warnbox" if gaps else ""
+                P.append('<div class="%s small" style="margin-top:8px">' % box)
+                P.append('<b>覆盖台账</b>：候选 %d 个文件 &rarr; 实扫 %d 个；'
+                         '设计内跳过：第三方依赖 %d、压缩产物 %d'
+                         % (cov.get("candidates", 0), cov.get("scanned", 0),
+                            cov.get("skipped_vendor", 0), cov.get("skipped_ext", 0)))
+                if gaps:
+                    P.append('<br><b>因技术原因未覆盖 %d 项</b>'
+                             '（大文件 %d / 目录截断 %s / 读取失败 %d）——'
+                             '这意味着「未检出」不等于「已排除」'
+                             % (gaps, cov.get("skipped_large", 0),
+                                "是" if cov.get("truncated") else "否",
+                                cov.get("read_errors", 0)))
+                else:
+                    P.append('<br>因技术原因未覆盖：0 项')
+                P.append('</div>')
 
             shown = [c for c in st["capabilities"] if c["level"] != "absent"]
             if shown:

@@ -1,0 +1,340 @@
+{
+  "tag": "v0.2.2-review-fixes",
+  "time": "2026-09-24 00:30:40",
+  "version": "0.2.2",
+  "measured_memory": true,
+  "aggregate": {
+    "tp": 7,
+    "fp": 0,
+    "fn": 0,
+    "tn": 14,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "total_seconds": 99.58,
+    "total_files": 3445,
+    "total_mb": 57.19,
+    "mb_per_sec": 0.57
+  },
+  "results": [
+    {
+      "id": "T1-feedback",
+      "path": "<REPO>/refs/ZCode/packages/services/src/feedback",
+      "seconds": 0.107,
+      "files_scanned": 6,
+      "bytes_scanned": 63303,
+      "peak_mem_bytes": 8563916,
+      "raw_hits": 14,
+      "caps": {
+        "object_storage_upload": "likely",
+        "upload_credential_api": "likely",
+        "retry_backoff": "possible",
+        "bulk_archive": "possible"
+      },
+      "cap_scores": {
+        "object_storage_upload": 12.89,
+        "upload_credential_api": 8.8,
+        "retry_backoff": 5.28,
+        "bulk_archive": 3.52
+      },
+      "cap_counts": {
+        "object_storage_upload": 5,
+        "upload_credential_api": 6,
+        "retry_backoff": 1,
+        "bulk_archive": 2
+      },
+      "errors": [],
+      "error": null,
+      "tp": 2,
+      "fp": 0,
+      "fn": 0,
+      "tn": 3,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "details": [
+        {
+          "cap": "upload_credential_api",
+          "verdict": "TP",
+          "got": "likely"
+        },
+        {
+          "cap": "object_storage_upload",
+          "verdict": "TP",
+          "got": "likely"
+        },
+        {
+          "cap": "browser_state_access",
+          "verdict": "TN",
+          "got": "absent"
+        },
+        {
+          "cap": "credential_access",
+          "verdict": "TN",
+          "got": "absent"
+        },
+        {
+          "cap": "envelope_encryption",
+          "verdict": "TN",
+          "got": "absent"
+        }
+      ],
+      "extra": []
+    },
+    {
+      "id": "T2-provider-node",
+      "path": "<REPO>/refs/ZCode/packages/provider-node/src",
+      "seconds": 0.132,
+      "files_scanned": 17,
+      "bytes_scanned": 70012,
+      "peak_mem_bytes": 8447126,
+      "raw_hits": 8,
+      "caps": {
+        "retry_backoff": "likely"
+      },
+      "cap_scores": {
+        "retry_backoff": 13.2
+      },
+      "cap_counts": {
+        "retry_backoff": 8
+      },
+      "errors": [],
+      "error": null,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 2,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "details": [
+        {
+          "cap": "retry_backoff",
+          "verdict": "TP",
+          "got": "likely"
+        },
+        {
+          "cap": "browser_state_access",
+          "verdict": "TN",
+          "got": "absent"
+        },
+        {
+          "cap": "upload_credential_api",
+          "verdict": "TN",
+          "got": "absent"
+        }
+      ],
+      "extra": []
+    },
+    {
+      "id": "T3-zwork-free",
+      "path": "<REPO>/refs/ZCode/packages/model-option-map/src",
+      "seconds": 0.05,
+      "files_scanned": 8,
+      "bytes_scanned": 28955,
+      "peak_mem_bytes": 8423005,
+      "raw_hits": 0,
+      "caps": {},
+      "cap_scores": {},
+      "cap_counts": {},
+      "errors": [],
+      "error": null,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 4,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "details": [
+        {
+          "cap": "workspace_snapshot",
+          "verdict": "TN",
+          "got": "absent"
+        },
+        {
+          "cap": "upload_credential_api",
+          "verdict": "TN",
+          "got": "absent"
+        },
+        {
+          "cap": "object_storage_upload",
+          "verdict": "TN",
+          "got": "absent"
+        },
+        {
+          "cap": "envelope_encryption",
+          "verdict": "TN",
+          "got": "absent"
+        }
+      ],
+      "extra": []
+    },
+    {
+      "id": "T4-vendor-runtime",
+      "path": "<KIMI_DATA_HOME>/daimon-bundle/runtime/python/cpython-3.12/Lib",
+      "seconds": 15.125,
+      "files_scanned": 683,
+      "bytes_scanned": 11424543,
+      "peak_mem_bytes": 10325825,
+      "raw_hits": 118,
+      "caps": {
+        "shell_execution": "confirmed",
+        "bulk_archive": "likely",
+        "retry_backoff": "likely",
+        "credential_access": "possible",
+        "browser_state_access": "possible",
+        "telemetry_egress": "possible"
+      },
+      "cap_scores": {
+        "shell_execution": 28.62,
+        "bulk_archive": 14.98,
+        "retry_backoff": 10.87,
+        "credential_access": 6.58,
+        "browser_state_access": 5.98,
+        "telemetry_egress": 5.28
+      },
+      "cap_counts": {
+        "shell_execution": 65,
+        "bulk_archive": 26,
+        "retry_backoff": 11,
+        "credential_access": 13,
+        "browser_state_access": 2,
+        "telemetry_egress": 1
+      },
+      "errors": [],
+      "error": null,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 5,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "details": [
+        {
+          "cap": "workspace_snapshot",
+          "verdict": "TN",
+          "got": "absent"
+        },
+        {
+          "cap": "upload_credential_api",
+          "verdict": "TN",
+          "got": "absent"
+        },
+        {
+          "cap": "object_storage_upload",
+          "verdict": "TN",
+          "got": "absent"
+        },
+        {
+          "cap": "envelope_encryption",
+          "verdict": "TN",
+          "got": "absent"
+        },
+        {
+          "cap": "credential_access",
+          "verdict": "TN",
+          "got": "possible"
+        }
+      ],
+      "extra": [
+        "bulk_archive",
+        "retry_backoff",
+        "shell_execution"
+      ]
+    },
+    {
+      "id": "T5-zcode-asar",
+      "path": "refs/ZCode/resources/app.asar",
+      "seconds": 84.165,
+      "files_scanned": 2731,
+      "bytes_scanned": 48376281,
+      "peak_mem_bytes": 58280128,
+      "raw_hits": 665,
+      "caps": {
+        "envelope_encryption": "confirmed",
+        "global_config_collection": "confirmed",
+        "workspace_snapshot": "confirmed",
+        "object_storage_upload": "confirmed",
+        "retry_backoff": "confirmed",
+        "telemetry_egress": "confirmed",
+        "credential_access": "likely",
+        "upload_credential_api": "likely",
+        "browser_state_access": "likely",
+        "git_history_access": "likely",
+        "shell_execution": "likely",
+        "bulk_archive": "likely"
+      },
+      "cap_scores": {
+        "envelope_encryption": 40.56,
+        "global_config_collection": 31.7,
+        "workspace_snapshot": 28.18,
+        "object_storage_upload": 20.17,
+        "retry_backoff": 27.16,
+        "telemetry_egress": 21.83,
+        "credential_access": 17.09,
+        "upload_credential_api": 12.73,
+        "browser_state_access": 12.35,
+        "git_history_access": 10.54,
+        "shell_execution": 17.79,
+        "bulk_archive": 9.68
+      },
+      "cap_counts": {
+        "envelope_encryption": 31,
+        "global_config_collection": 111,
+        "workspace_snapshot": 79,
+        "object_storage_upload": 20,
+        "retry_backoff": 140,
+        "telemetry_egress": 135,
+        "credential_access": 15,
+        "upload_credential_api": 11,
+        "browser_state_access": 18,
+        "git_history_access": 20,
+        "shell_execution": 78,
+        "bulk_archive": 7
+      },
+      "errors": [],
+      "error": null,
+      "tp": 4,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "details": [
+        {
+          "cap": "workspace_snapshot",
+          "verdict": "TP",
+          "got": "confirmed"
+        },
+        {
+          "cap": "object_storage_upload",
+          "verdict": "TP",
+          "got": "confirmed"
+        },
+        {
+          "cap": "envelope_encryption",
+          "verdict": "TP",
+          "got": "confirmed"
+        },
+        {
+          "cap": "upload_credential_api",
+          "verdict": "TP",
+          "got": "likely"
+        }
+      ],
+      "extra": [
+        "browser_state_access",
+        "bulk_archive",
+        "credential_access",
+        "git_history_access",
+        "global_config_collection",
+        "retry_backoff",
+        "shell_execution",
+        "telemetry_egress"
+      ]
+    }
+  ]
+}

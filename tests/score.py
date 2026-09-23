@@ -22,14 +22,22 @@ ROOT = os.path.dirname(HERE)
 
 # ---------------- 阈值表（改这里就是改评分标准，请谨慎） ----------------
 
-SPEED_CURVE = {
-    "min_mb_s": 0.4,      # 这个速度得 0 分
-    "max_mb_s": 12.0,     # 这个速度得满分
-    "max_points": 25,
-}
+# 速度分档：用「标准基准用例的端到端秒数」而不是吞吐率（MB/s）。
+#
+# 为什么不用吞吐率：优化后跳过了 82% 的第三方依赖字节，分母也变小了，
+# 吞吐率看起来几乎没变（都是 0.7 MB/s）——它无法反映用户真正感知的「等了多久」。
+# 端到端秒数才是用户感知量。
+#
+# 档位标定基准：ZCode 的 app.asar（自研代码 46 MB / 2731 个文件）
+# 30 s 以内算优秀，240 s 以上算不可接受（用户不会有耐心等）。
+SPEED_TIERS = [
+    (30, 25), (60, 20), (120, 14), (240, 7), (float("inf"), 0),
+]
 
-MEM_TIERS = [             # (峰值内存上限 MB, 得分)
-    (50, 15), (150, 12), (300, 8), (600, 4), (float("inf"), 0),
+# 内存分档：以「扫描 250 MB 归档」为参照系——峰值控制在归档体积的 1/4 以内算优秀。
+# 档位刻意做细：内存是这类工具的硬约束（它本身要跑在用户机器上，不该占太多）。
+MEM_TIERS = [
+    (60, 15), (120, 12), (200, 9), (400, 5), (800, 2), (float("inf"), 0),
 ]
 
 ACCURACY_POINTS = 40      # F1 × 40
@@ -45,26 +53,28 @@ def score_accuracy(f1):
     return round(f1 * ACCURACY_POINTS, 1), "F1=%.3f × %d" % (f1, ACCURACY_POINTS)
 
 
-def score_speed(mb_s):
-    lo, hi, mx = SPEED_CURVE["min_mb_s"], SPEED_CURVE["max_mb_s"], SPEED_CURVE["max_points"]
-    if mb_s is None or mb_s <= 0:
-        return 0.0, "无有效吞吐数据"
-    if mb_s <= lo:
-        return 0.0, "%.2f MB/s ≤ 下限 %.2f" % (mb_s, lo)
-    if mb_s >= hi:
-        return float(mx), "%.2f MB/s ≥ 上限 %.2f" % (mb_s, hi)
-    # 对数刻度：让「1 → 2 MB/s」和「2 → 4 MB/s」得到同样的增量
-    ratio = math.log(mb_s / lo) / math.log(hi / lo)
-    return round(mx * ratio, 1), "%.2f MB/s 对数刻度（%.2f–%.2f 区间）" % (mb_s, lo, hi)
+def score_speed(seconds):
+    if not seconds:
+        return 0.0, "无有效耗时数据"
+    prev = 0
+    for cap, pts in SPEED_TIERS:
+        if seconds <= cap:
+            return float(pts), "最重用例端到端 %.1f s（区间 %s–%s s）" % (
+                seconds, prev, "∞" if cap == float("inf") else cap)
+        prev = cap
+    return 0.0, "端到端 %.1f s" % seconds
 
 
 def score_memory(peak_bytes):
     if not peak_bytes:
         return None, "本轮未测内存（加 --mem）"
     mb = peak_bytes / 1048576
+    prev = 0
     for cap_mb, pts in MEM_TIERS:
         if mb <= cap_mb:
-            return float(pts), "峰值 %.1f MB（档位 ≤%s MB）" % (mb, cap_mb)
+            return float(pts), "峰值 %.1f MB（区间 %s–%s MB）" % (
+                mb, prev, "∞" if cap_mb == float("inf") else cap_mb)
+        prev = cap_mb
     return 0.0, "峰值 %.1f MB" % mb
 
 
@@ -131,8 +141,9 @@ def score_report(report):
     pts, why = score_accuracy(agg.get("f1"))
     rows.append(("准确度", pts, ACCURACY_POINTS, why))
 
-    pts, why = score_speed(agg.get("mb_per_sec"))
-    rows.append(("速度", pts, SPEED_CURVE["max_points"], why))
+    max_sec = max((r.get("seconds", 0) for r in report["results"]), default=0)
+    pts, why = score_speed(max_sec)
+    rows.append(("速度", pts, SPEED_TIERS[0][1], why))
 
     peak = 0
     if report.get("measured_memory"):

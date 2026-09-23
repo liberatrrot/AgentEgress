@@ -42,14 +42,22 @@ def run_case(case, measure_mem=False):
     if measure_mem:
         tracemalloc.start()
 
-    acc = ae.CapabilityAccumulator()
     t0 = time.perf_counter()
     try:
-        _hits, meta = ae.audit_path(case["path"], acc=acc)
-        caps = ae.aggregate_from_buckets(acc)
+        if hasattr(ae, "CapabilityAccumulator"):
+            # v0.2.1+：走 CLI 同一条路径（流式聚合，跳过携带区）
+            acc = ae.CapabilityAccumulator()
+            _hits, meta = ae.audit_path(case["path"], acc=acc)
+            caps = ae.aggregate_from_buckets(acc)
+            raw = acc.total_hits
+        else:
+            # v0.2.0：命中全部留在内存里，且不跳过 node_modules
+            hits, meta = ae.audit_path(case["path"])
+            caps = ae.aggregate_capabilities(hits)
+            raw = len(hits)
         err = None
     except Exception as e:                      # noqa: BLE001
-        meta, caps, err = {"files_scanned": 0, "bytes_scanned": 0}, [], repr(e)
+        meta, caps, raw, err = {"files_scanned": 0, "bytes_scanned": 0}, [], 0, repr(e)
     t1 = time.perf_counter()
 
     peak = 0
@@ -64,7 +72,7 @@ def run_case(case, measure_mem=False):
         "files_scanned": meta.get("files_scanned", 0),
         "bytes_scanned": meta.get("bytes_scanned", 0),
         "peak_mem_bytes": peak,
-        "raw_hits": acc.total_hits,
+        "raw_hits": raw,
         "caps": {c["id"]: c["level"] for c in caps},
         "cap_scores": {c["id"]: c["score"] for c in caps},
         "cap_counts": {c["id"]: c.get("hit_total", 0) for c in caps},
