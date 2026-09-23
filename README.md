@@ -2,38 +2,59 @@
 
 AI 客户端数据外传审计器 —— **审「正在用的工具本身」，不审你要装的东西。**
 
-只读 · 零依赖 · 不联网 · 不外传
+`v0.2.0` · 只读 · 零依赖 · 不联网 · 不外传
 
 ---
 
-## 它回答什么问题
+## 它回答两个问题
 
-现有 AI 安全工具都在问"我要装的 skill / 插件 / MCP 安全吗"。
+现有 AI 安全工具都在问"我要装的 skill / 插件 / MCP 安全吗"。AgentEgress 问的是另外两个：
 
-AgentEgress 问的是另一个问题：
+| 问题 | 模块 |
+|---|---|
+| 我正在用的这个客户端，**传过什么**？ | M1 数据目录扫描 + M2 打包清单还原 |
+| 它**能不能传**？ | M3 客户端静态审计（能力画像） |
 
-> **我正在用的这个客户端，它自己偷偷往外送了什么？**
+**第二个问题才是重点。** ZCode 删掉了自动上传的触发条件，但「申请上传凭证 → 直传对象存储」这套架构一行没动（详见 `cybersec-kb/05-ZCode开源拆解与影响.md`）。只审"当前行为"会漏掉"暂时休眠的能力"。
 
 ---
 
 ## 快速开始
 
 ```powershell
-# 全部工具
+# 基础体检（M1 + M2）
 python agentegress.py
 
 # 只扫一个工具
 python agentegress.py --tool zcode
 
-# 出报告
-python agentegress.py -m reports/scan.md -j reports/scan.json
+# 出报告（Markdown / JSON / 单文件 HTML）
+python agentegress.py -m reports/scan.md -j reports/scan.json -H reports/scan.html
+
+# 启用 M3 静态审计（自动定位已装客户端）
+python agentegress.py --static -H reports/scan.html
+
+# 指定审计目标（目录或 app.asar）
+python agentegress.py --static-path "refs/ZCode\resources\app.asar" -H reports/zcode.html
 ```
 
-**注意（Windows）**：控制台读中文可能乱码，报告的 Markdown / JSON 文件编码是对的。建议直接看文件。
+**Windows 注意**：控制台读中文可能乱码，但报告文件编码是正确的。建议直接看 `-H` 产出的 HTML。
+
+---
+
+## 三个模块
+
+| 模块 | 做什么 | 状态 |
+|---|---|---|
+| **M1** 数据目录指纹库与扫描器 | 识别各 AI 客户端的数据目录、快照残留、pending 密文、异常体积 | ✅ |
+| **M2** 打包清单还原器 | 从明文元数据还原「传了哪些文件、多少字节、成功没有」 | ✅ |
+| **M3** 客户端静态审计 | 解包 app.asar / 读源码，判定「有没有外传能力」 | ✅ v0.2 |
 
 ---
 
 ## 输出示例
+
+**M1 + M2**（数据痕迹）：
 
 ```
 -- ZCode (智谱 Zhipu) ----------------------------------------
@@ -41,9 +62,6 @@ python agentegress.py -m reports/scan.md -j reports/scan.json
     - 上传链路被触发过：失败计数 = 2
     - 存在打包清单：1 份 / 19 个文件 / 784.58 KB
     - 采集范围超出单个工作区：额外纳入 2 个全局配置文件
-  数据目录:
-    <HOME>\.zcode   (776 文件 / 107.57 MB)
-  已知出站端点: zcode.z.ai, *.aliyuncs.com (OSS)
   已知开关语义:
     optimizeAgentExperienceEnabled
       声称: 数据采集 / 遥测上传
@@ -52,57 +70,128 @@ python agentegress.py -m reports/scan.md -j reports/scan.json
     工作区      : <WORKSPACE>
     上传失败计数: 2
     最近打包    : 784.58 KB  ->  加密后 2.47 KB
-    打包清单:
-      repo_snapshot_manifest/v2  19 个文件 / 784.58 KB
-        661.00 KB  tools/bind/CHANGES
-        ...
 ```
+
+**M3**（能力画像）：
+
+```
+  [外传能力画像 · M3] 存在多项已确认的外传能力
+    扫描 298 个文件 / 3.15 MB  |  已确认 2 / 疑似 4 / 弱信号 4
+    [CONFIRMED] 失败自动重试        模式3  文件15  命中55   触发:自动
+    [CONFIRMED] 遥测上报            模式4  文件21  命中88   触发:未判定
+    [LIKELY]    工作区全量快照       模式2  文件8   命中24   触发:自动
+    [LIKELY]    信封加密            模式2  文件1   命中5    触发:未判定
+    [LIKELY]    对象存储直传        模式2  文件1   命中5    触发:未判定
+    [LIKELY]    上传凭证接口        模式1  文件1   命中6    触发:未判定
+    [POSSIBLE]  命令执行            模式1  文件8   命中22   触发:未判定
+```
+
+---
+
+## M3 判定算法（精度说明）
+
+粗糙的做法是"关键词计数"。本工具做了三层区分：
+
+### 第一层 · 区域分级
+
+先把源码切成 `代码 / 字符串 / 注释` 三类区域（轻量词法扫描器，非完整解析）。
+
+> 「代码里调用了 `createCipheriv`」和「注释里提到了 AES-256」是两个完全不同量级的证据。
+
+| 区域 | 系数 |
+|---|---|
+| 代码区 | 1.00 |
+| 字符串字面量 | 0.85 |
+| 注释区 | 0.15 |
+
+### 第二层 · 文件分级
+
+| 类别 | 系数 |
+|---|---|
+| 生产代码 | 1.00 |
+| 配置 | 0.90 |
+| 类型定义 | 0.30 |
+| 测试 | 0.25 |
+| 文档 | 0.15 |
+| 第三方 / 构建产物 | 0.10 |
+
+> 同一句话出现在 `README.md` 和出现在 `src/main/index.ts` 里，含义天差地别。
+
+### 第三层 · 有界评分
+
+```
+单个模式贡献 = 最高单条基础分 × 多样性系数
+多样性系数 = 0.85 + 0.15 × min(命中文件数, 5) / 5
+能力总分 = 各模式贡献之和
+```
+
+**一个模式只贡献一次。** 因为能力判定问的是"有没有这种能力"，而不是"被调用了多少次"——298 个文件的生产代码库里，telemetry / retry 这类常规调用动辄命中几十次，累加会让分数随仓库规模线性膨胀。
+
+### 等级判定（三个条件同时满足）
+
+| 等级 | 分数 | 模式数 | 文件数 |
+|---|---|---|---|
+| confirmed | ≥18 | ≥3 | ≥2 |
+| likely | ≥8 | ≥2 | ≥1 |
+| possible | ≥3 | ≥1 | ≥1 |
+
+**强单证据抬升**：`upload-credential` 这种词几乎不可能是巧合，单个模式也能抬到 likely——但仅当它出现在生产代码 / 配置里时。
+
+### 触发方式推断
+
+在证据行 ±3 行的上下文里找信号词，推断是「自动」还是「用户主动」。
+
+> 这是**推断不是事实**。ZCode 的教训正是「同一个架构，触发条件一改性质就变了」。
 
 ---
 
 ## 支持的指纹
 
-| id | 工具 | 覆盖路径 |
+| id | 工具 | 覆盖 |
 |---|---|---|
-| `zcode` | ZCode（智谱） | `~/.zcode`、`%APPDATA%/ZCode`、updater |
-| `codex` | Codex CLI | `~/.codex` |
-| `workbuddy` | WorkBuddy | `~/.workbuddy`、`<WORKBUDDY_HOME>` |
-| `kimi-work` | Kimi Work | `~/.kimi-work`、`~/.kimi-webbridge`、`<KIMI_DATA_HOME>` |
-| `cursor` | Cursor | `~/.cursor`、`%APPDATA%/Cursor` |
-| `claude-code` | Claude Code | `~/.claude` |
-| `tabnine` | Tabnine | `~/.tabnine` |
+| `zcode` | ZCode（智谱） | 数据目录 + app.asar |
+| `codex` | Codex CLI | 数据目录 |
+| `workbuddy` | WorkBuddy（腾讯） | 数据目录 + app.asar |
+| `kimi-work` | Kimi Work | 数据目录 + app.asar + gateway.asar |
+| `cursor` | Cursor | 数据目录 + app.asar |
+| `claude-code` | Claude Code | 数据目录 |
+| `tabnine` | Tabnine | 数据目录 |
+| `opencode` | opencode | 数据目录 + app.asar |
 
-加新工具见 `ARCHITECTURE.md` 第六节。
+加新工具见 `ARCHITECTURE.md`。
 
 ---
 
 ## 能力边界（必读）
 
-**能做**：发现快照残留、还原打包清单、检测跨工作区采集、展示开关话术落差。
+**能做**：发现快照残留、还原打包清单、检测跨工作区采集、展示开关话术落差、判定客户端外传能力。
 
 **不能做**：
 - ❌ 不能证明数据是否已被服务端**接收 / 删除** —— 本地没有痕迹能证明这一点
 - ❌ 不能检测**零本地痕迹**的外传（传完就删、不留状态文件的客户端）
 - ❌ 不能区分「尝试」与「成功」—— 那需要网络层证据
+- ⚠️ M3 是**静态**审计：读到"有这个能力"不等于"这个能力被用在了你身上"
+- ⚠️ 指纹库与模式库都有滞后性，新工具、新版本可能未覆盖
 
-> 本地取证的正确表述是「**尝试过、打包了这些**」，不是「应该没事」。
+> 本地取证的正确表述是「**有这种能力 / 尝试过 / 打包了这些**」，不是「应该没事」。
 
 ---
 
 ## 设计约束
 
-- 只读：所有操作都是 `scandir` / 读文件
-- 零依赖：只用 Python 标准库
-- 不联网：不发起任何网络请求
-- 不自动处置：只输出建议，执行由人决定
+- **只读**：所有操作都是 `scandir` / 读文件
+- **零依赖**：只用 Python 标准库
+- **不联网**：不发起任何网络请求
+- **不自动处置**：只输出证据与建议，执行由人决定
+- **结论可回溯**：每个判定都能点回到 `文件:行:内容`
 
 ---
 
 ## 文件
 
 ```
-agentegress.py      主程序（单文件，869 行）
-ARCHITECTURE.md     架构、数据模型、迭代路线、踩坑实录
-reports/            扫描报告输出
-refs/               参考样本（如 ZCode 开源源码）
+agentegress.py                         主程序（单文件，零依赖）
+ARCHITECTURE.md                        架构、数据模型、评分设计、踩坑实录、迭代路线
+reports/                               扫描报告输出
+refs/                                  参考样本（外部克隆的源码，如 ZCode）
 ```
