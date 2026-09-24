@@ -3,28 +3,30 @@ AgentEgress 自审（主动，不依赖外部评审）
 ==============================================================================
 
 【A 结构健康度】
-  代码 3403 行（代码 2786 / 注释 280 / 空行 337），注释占比 8.2%
-  函数 65 个，类 3 个
-  单文件 3403 行 —— ⚠ 已超过单文件可维护舒适区（建议 >2500 行就考虑拆分）
+  代码 3480 行（代码 2831 / 注释 310 / 空行 339），注释占比 8.9%
+  函数 66 个，类 3 个
+  单文件 3480 行 —— ⚠ 已超过单文件可维护舒适区（建议 >2500 行就考虑拆分）
 
   最长的 5 个函数：
-    render_html                       295 行  (第 2960 行)  ⚠ >100 行
-    render_md                         150 行  (第 2612 行)  ⚠ >100 行
-    audit_path                        148 行  (第 2181 行)  ⚠ >100 行
-    main                              141 行  (第 3259 行)  ⚠ >100 行
-    render_text                       135 行  (第 2462 行)  ⚠ >100 行
+    render_html                       303 行  (第 3029 行)  ⚠ >100 行
+    audit_path                        158 行  (第 2228 行)  ⚠ >100 行
+    render_md                         150 行  (第 2681 行)  ⚠ >100 行
+    render_text                       141 行  (第 2525 行)  ⚠ >100 行
+    main                              141 行  (第 3336 行)  ⚠ >100 行
 
   复杂度最高的 5 个函数（粗略圈复杂度）：
-    render_html                        55      (第 2960 行)  ⚠ >20
-    render_text                        44      (第 2462 行)  ⚠ >20
-    audit_path                         40      (第 2181 行)  ⚠ >20
-    render_md                          33      (第 2612 行)  ⚠ >20
-    lex_regions                        29      (第 702 行)  ⚠ >20
+    render_html                        56      (第 3029 行)  ⚠ >20
+    render_text                        45      (第 2525 行)  ⚠ >20
+    audit_path                         41      (第 2228 行)  ⚠ >20
+    render_md                          33      (第 2681 行)  ⚠ >20
+    lex_regions                        29      (第 724 行)  ⚠ >20
 
   >100 行的函数 6 个；圈复杂度 >20 的 8 个
 
 【B 文档承诺（未来时表述）】
-  共 18 条，逐条需人工核对是否已兑现：
+  扫到 18 条
+  TODO.md 存在=True，含未做项=True  ← 规矩：所有「以后要做」只写 TODO.md
+  以下条目若为「已承诺但未登记」，应移入 TODO.md 或改写为完成时：
     ARCHITECTURE.md       :286   > 属于 v0.3。本轮做的是「不把 vendor 当安全边界，但仍按判别力分层」。
     ARCHITECTURE.md       :290   要做概率校准需要数百个标注样本 + isotonic/逻辑回归标定——那是 v0.3 的事。
     ARCHITECTURE.md       :297   要做概率校准需要数百个标注样本 + isotonic / 逻辑回归标定——那是 v0.3 的事。
@@ -40,8 +42,8 @@ AgentEgress 自审（主动，不依赖外部评审）
     REVIEW-RESPONSE.md    :349   **它建议的下一轮核心问题我照抄下来了**：
     REVIEW-RESPONSE.md    :353   这个问题已写进 ARCHITECTURE，作为 v0.3 做 source→sink 分析的立项理由。
     REVIEW-RESPONSE.md    :428   ## 十三、本轮未做的（诚实交代）
-    REVIEW-RESPONSE.md    :432   | **near-negative 验收条件太弱** | ⬜ 部分 | 已加"不得触发阻断级 + 不得高危 confirmed"，但它要求的"预先定义 expected findings/se
-    REVIEW-RESPONSE.md    :434   | **confirmed/likely/possible 语义化** | ⬜ 未做 | 这是 v0.3 的核心工作（需要 source→sink 分析）。我同意它是"尚未闭环的最大方法论问题
+    REVIEW-RESPONSE.md    :432   | **near-negative 验收条件太弱** | ⬜ 部分 | 已加"不得触发阻断级 + 不得高危 confirmed"，但它要求的"预先定义 expected finding
+    REVIEW-RESPONSE.md    :434   | **confirmed/likely/possible 语义化** | ⬜ 未做 | 这是 v0.3 的核心工作（需要 source→sink 分析）。我同意它是"尚未闭环的最大方
     REVIEW-FINDINGS.md    :132   | #16~19 | 低风险清理项，已记录待办 |
 
 【C 测试覆盖结构】

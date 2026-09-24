@@ -83,10 +83,12 @@ PROMISE_PAT = re.compile(
 
 
 def promise_audit():
-    """扫出所有「未来时」表述，人工核对哪些已兑现。
+    """扫出所有「未来时」表述，检查它们是否已在 TODO.md 登记。
 
-    这个机制是为了堵住一个真实问题：REVIEW-RESPONSE 里写过
-    「准确度维度改为降权」，但代码里实际没改——**说了没做，而且没人发现**。
+    背景：REVIEW-RESPONSE 里写过「准确度维度改为降权」，但代码里实际没改——
+    **说了没做，而且没有机制能发现**。
+    现在的规矩是：所有"以后要做"只写 TODO.md，文档正文不再留承诺。
+    这个函数就是那条规矩的执法者。
     """
     promises = []
     for name in DOCS:
@@ -100,7 +102,15 @@ def promise_audit():
                     continue
                 if PROMISE_PAT.search(s):
                     promises.append({"doc": name, "line": i, "text": s[:150]})
-    return promises
+
+    # TODO.md 是否登记了这些事项
+    todo_path = os.path.join(ROOT, "TODO.md")
+    todo_text = ""
+    if os.path.isfile(todo_path):
+        with open(todo_path, encoding="utf-8") as f:
+            todo_text = f.read()
+    registered = bool(todo_text) and "待做" in todo_text
+    return {"items": promises, "todo_exists": bool(todo_text), "todo_registered": registered}
 
 
 # ---------------------------------------------------------------- C 测试覆盖结构
@@ -162,13 +172,18 @@ def main():
     L.append("  >100 行的函数 %d 个；圈复杂度 >20 的 %d 个"
              % (len(s["funcs_over_100_lines"]), len(s["funcs_over_cx20"])))
 
+    pa = out["promises"]
     L.append("")
     L.append("【B 文档承诺（未来时表述）】")
-    L.append("  共 %d 条，逐条需人工核对是否已兑现：" % len(out["promises"]))
-    for pr in out["promises"][:25]:
-        L.append("    %-22s:%-5d %s" % (pr["doc"], pr["line"], pr["text"][:96]))
-    if len(out["promises"]) > 25:
-        L.append("    … 其余 %d 条" % (len(out["promises"]) - 25))
+    L.append("  扫到 %d 条" % len(pa["items"]))
+    L.append("  TODO.md 存在=%s，含未做项=%s  ← 规矩：所有「以后要做」只写 TODO.md"
+             % (pa["todo_exists"], pa["todo_registered"]))
+    if pa["items"] and pa["todo_registered"]:
+        L.append("  以下条目若为「已承诺但未登记」，应移入 TODO.md 或改写为完成时：")
+    for pr in pa["items"][:20]:
+        L.append("    %-22s:%-5d %s" % (pr["doc"], pr["line"], pr["text"][:92]))
+    if len(pa["items"]) > 20:
+        L.append("    … 其余 %d 条" % (len(pa["items"]) - 20))
 
     L.append("")
     L.append("【C 测试覆盖结构】")

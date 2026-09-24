@@ -1,78 +1,78 @@
 {
   "structure": {
-    "total_lines": 3403,
-    "code_lines": 2786,
-    "comment_lines": 280,
-    "comment_ratio": 0.0823,
-    "functions": 65,
+    "total_lines": 3480,
+    "code_lines": 2831,
+    "comment_lines": 310,
+    "comment_ratio": 0.0891,
+    "functions": 66,
     "classes": 3,
     "longest_funcs": [
       [
         "render_html",
-        295,
-        2960
+        303,
+        3029
+      ],
+      [
+        "audit_path",
+        158,
+        2228
       ],
       [
         "render_md",
         150,
-        2612
+        2681
       ],
       [
-        "audit_path",
-        148,
-        2181
+        "render_text",
+        141,
+        2525
       ],
       [
         "main",
         141,
-        3259
-      ],
-      [
-        "render_text",
-        135,
-        2462
+        3336
       ],
       [
         "lex_regions",
         107,
-        702
+        724
+      ],
+      [
+        "scan_text_for_capabilities",
+        90,
+        1737
       ],
       [
         "expand_snapshot",
         81,
         514
-      ],
-      [
-        "summarize_capabilities",
-        81,
-        2098
       ]
     ],
     "highest_complexity": [
       [
         "render_html",
-        55,
-        2960
+        56,
+        3029
       ],
       [
         "render_text",
-        44,
-        2462
+        45,
+        2525
       ],
       [
         "audit_path",
-        40,
-        2181
+        41,
+        2228
       ],
       [
         "render_md",
         33,
-        2612
+        2681
       ],
       [
         "lex_regions",
         29,
-        702
+        724
       ],
       [
         "expand_snapshot",
@@ -82,7 +82,7 @@
       [
         "main",
         23,
-        3259
+        3336
       ],
       [
         "walk_collect",
@@ -93,60 +93,60 @@
     "funcs_over_100_lines": [
       [
         "render_html",
-        295,
-        2960
+        303,
+        3029
+      ],
+      [
+        "audit_path",
+        158,
+        2228
       ],
       [
         "render_md",
         150,
-        2612
+        2681
       ],
       [
-        "audit_path",
-        148,
-        2181
+        "render_text",
+        141,
+        2525
       ],
       [
         "main",
         141,
-        3259
-      ],
-      [
-        "render_text",
-        135,
-        2462
+        3336
       ],
       [
         "lex_regions",
         107,
-        702
+        724
       ]
     ],
     "funcs_over_cx20": [
       [
         "render_html",
-        55,
-        2960
+        56,
+        3029
       ],
       [
         "render_text",
-        44,
-        2462
+        45,
+        2525
       ],
       [
         "audit_path",
-        40,
-        2181
+        41,
+        2228
       ],
       [
         "render_md",
         33,
-        2612
+        2681
       ],
       [
         "lex_regions",
         29,
-        702
+        724
       ],
       [
         "expand_snapshot",
@@ -156,7 +156,7 @@
       [
         "main",
         23,
-        3259
+        3336
       ],
       [
         "walk_collect",
@@ -165,98 +165,102 @@
       ]
     ]
   },
-  "promises": [
-    {
-      "doc": "ARCHITECTURE.md",
-      "line": 286,
-      "text": "> 属于 v0.3。本轮做的是「不把 vendor 当安全边界，但仍按判别力分层」。"
-    },
-    {
-      "doc": "ARCHITECTURE.md",
-      "line": 290,
-      "text": "要做概率校准需要数百个标注样本 + isotonic/逻辑回归标定——那是 v0.3 的事。"
-    },
-    {
-      "doc": "ARCHITECTURE.md",
-      "line": 297,
-      "text": "要做概率校准需要数百个标注样本 + isotonic / 逻辑回归标定——那是 v0.3 的事。"
-    },
-    {
-      "doc": "ARCHITECTURE.md",
-      "line": 313,
-      "text": "### v0.3.0 · M4 出站行为验证"
-    },
-    {
-      "doc": "ARCHITECTURE.md",
-      "line": 321,
-      "text": "### v0.4.0 · M5 判定与处置"
-    },
-    {
-      "doc": "REVIEW-RESPONSE.md",
-      "line": 127,
-      "text": "| **Dynamic code**（eval / new Function / 字符串拼接调用） | ⬜ 未实现。它说得对，这会让静态置信度下降。列入 v0.3 |"
-    },
-    {
-      "doc": "REVIEW-RESPONSE.md",
-      "line": 183,
-      "text": "> 但那是 v0.3 的工作量（需要轻量符号解析），不是本轮能塞进去的。"
-    },
-    {
-      "doc": "REVIEW-RESPONSE.md",
-      "line": 224,
-      "text": "**本轮未改**（会牵动所有历史判定，需要重新标定），列入 v0.3。"
-    },
-    {
-      "doc": "REVIEW-RESPONSE.md",
-      "line": 256,
-      "text": "工作量远超本轮。列入 v0.3 P1。"
-    },
-    {
-      "doc": "REVIEW-RESPONSE.md",
-      "line": 298,
-      "text": "| ① 不要再把 node_modules 当安全边界 | **部分采纳**：不跳过，改为「高判别模式 + 降权」。跨 package 数据流留 v0.3 |"
-    },
-    {
-      "doc": "REVIEW-RESPONSE.md",
-      "line": 299,
-      "text": "| ② 等级从分数变成有明确语义的证据等级 | **部分采纳**：加了组合链与 status；阈值语义化留 v0.3 |"
-    },
-    {
-      "doc": "REVIEW-RESPONSE.md",
-      "line": 300,
-      "text": "| ③ 建立 adversarial corpus + mutation testing | **部分采纳**：近负样本已做；mutation testing 留 v0.3 |"
-    },
-    {
-      "doc": "REVIEW-RESPONSE.md",
-      "line": 349,
-      "text": "**它建议的下一轮核心问题我照抄下来了**："
-    },
-    {
-      "doc": "REVIEW-RESPONSE.md",
-      "line": 353,
-      "text": "这个问题已写进 ARCHITECTURE，作为 v0.3 做 source→sink 分析的立项理由。"
-    },
-    {
-      "doc": "REVIEW-RESPONSE.md",
-      "line": 428,
-      "text": "## 十三、本轮未做的（诚实交代）"
-    },
-    {
-      "doc": "REVIEW-RESPONSE.md",
-      "line": 432,
-      "text": "| **near-negative 验收条件太弱** | ⬜ 部分 | 已加\"不得触发阻断级 + 不得高危 confirmed\"，但它要求的\"预先定义 expected findings/severity/chain/trigger\"需要为每个场景手写期望表——本轮时间不够，已记入待办 |"
-    },
-    {
-      "doc": "REVIEW-RESPONSE.md",
-      "line": 434,
-      "text": "| **confirmed/likely/possible 语义化** | ⬜ 未做 | 这是 v0.3 的核心工作（需要 source→sink 分析）。我同意它是\"尚未闭环的最大方法论问题\" |"
-    },
-    {
-      "doc": "REVIEW-FINDINGS.md",
-      "line": 132,
-      "text": "| #16~19 | 低风险清理项，已记录待办 |"
-    }
-  ],
+  "promises": {
+    "items": [
+      {
+        "doc": "ARCHITECTURE.md",
+        "line": 286,
+        "text": "> 属于 v0.3。本轮做的是「不把 vendor 当安全边界，但仍按判别力分层」。"
+      },
+      {
+        "doc": "ARCHITECTURE.md",
+        "line": 290,
+        "text": "要做概率校准需要数百个标注样本 + isotonic/逻辑回归标定——那是 v0.3 的事。"
+      },
+      {
+        "doc": "ARCHITECTURE.md",
+        "line": 297,
+        "text": "要做概率校准需要数百个标注样本 + isotonic / 逻辑回归标定——那是 v0.3 的事。"
+      },
+      {
+        "doc": "ARCHITECTURE.md",
+        "line": 313,
+        "text": "### v0.3.0 · M4 出站行为验证"
+      },
+      {
+        "doc": "ARCHITECTURE.md",
+        "line": 321,
+        "text": "### v0.4.0 · M5 判定与处置"
+      },
+      {
+        "doc": "REVIEW-RESPONSE.md",
+        "line": 127,
+        "text": "| **Dynamic code**（eval / new Function / 字符串拼接调用） | ⬜ 未实现。它说得对，这会让静态置信度下降。列入 v0.3 |"
+      },
+      {
+        "doc": "REVIEW-RESPONSE.md",
+        "line": 183,
+        "text": "> 但那是 v0.3 的工作量（需要轻量符号解析），不是本轮能塞进去的。"
+      },
+      {
+        "doc": "REVIEW-RESPONSE.md",
+        "line": 224,
+        "text": "**本轮未改**（会牵动所有历史判定，需要重新标定），列入 v0.3。"
+      },
+      {
+        "doc": "REVIEW-RESPONSE.md",
+        "line": 256,
+        "text": "工作量远超本轮。列入 v0.3 P1。"
+      },
+      {
+        "doc": "REVIEW-RESPONSE.md",
+        "line": 298,
+        "text": "| ① 不要再把 node_modules 当安全边界 | **部分采纳**：不跳过，改为「高判别模式 + 降权」。跨 package 数据流留 v0.3 |"
+      },
+      {
+        "doc": "REVIEW-RESPONSE.md",
+        "line": 299,
+        "text": "| ② 等级从分数变成有明确语义的证据等级 | **部分采纳**：加了组合链与 status；阈值语义化留 v0.3 |"
+      },
+      {
+        "doc": "REVIEW-RESPONSE.md",
+        "line": 300,
+        "text": "| ③ 建立 adversarial corpus + mutation testing | **部分采纳**：近负样本已做；mutation testing 留 v0.3 |"
+      },
+      {
+        "doc": "REVIEW-RESPONSE.md",
+        "line": 349,
+        "text": "**它建议的下一轮核心问题我照抄下来了**："
+      },
+      {
+        "doc": "REVIEW-RESPONSE.md",
+        "line": 353,
+        "text": "这个问题已写进 ARCHITECTURE，作为 v0.3 做 source→sink 分析的立项理由。"
+      },
+      {
+        "doc": "REVIEW-RESPONSE.md",
+        "line": 428,
+        "text": "## 十三、本轮未做的（诚实交代）"
+      },
+      {
+        "doc": "REVIEW-RESPONSE.md",
+        "line": 432,
+        "text": "| **near-negative 验收条件太弱** | ⬜ 部分 | 已加\"不得触发阻断级 + 不得高危 confirmed\"，但它要求的\"预先定义 expected findings/severity/chain/trigger\"需要为每个场景手写期望表——本轮时间不够，已记入待办 |"
+      },
+      {
+        "doc": "REVIEW-RESPONSE.md",
+        "line": 434,
+        "text": "| **confirmed/likely/possible 语义化** | ⬜ 未做 | 这是 v0.3 的核心工作（需要 source→sink 分析）。我同意它是\"尚未闭环的最大方法论问题\" |"
+      },
+      {
+        "doc": "REVIEW-FINDINGS.md",
+        "line": 132,
+        "text": "| #16~19 | 低风险清理项，已记录待办 |"
+      }
+    ],
+    "todo_exists": true,
+    "todo_registered": true
+  },
   "coverage": {
     "checks": [
       "语法编译",
