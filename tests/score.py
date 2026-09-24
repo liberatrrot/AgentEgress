@@ -47,10 +47,111 @@ VERIFIABILITY_POINTS = 10 # 回归基准 + 标注集是否齐备
 CAPABILITY_COUNT = 12     # CAPABILITY_DEFS 里的能力类数
 
 
-def score_accuracy(f1):
+def _clopper_pearson(k, n, alpha=0.05):
+    """Clopper–Pearson 精确区间的边界值。
+
+    外部评审的硬伤级批评：4/4 全中的 95% 敏感度下限只有约 39.8%；
+    0/1 无误报的误报率上限高达 97.5%。
+    这个函数把这件事从"道理"变成"数字"，直接印在分数旁边。
+
+    边界情况用闭式解（也是实际最常用的两个数字），避免数值方法在 a=b 上的退化：
+        k = n : 下限 = (α/2)^(1/n)，上限 = 1
+        k = 0 : 下限 = 0，上限 = 1 - (α/2)^(1/n)
+    """
+    if n <= 0:
+        return 0.0, 1.0
+    if k <= 0:
+        return 0.0, 1.0 - (alpha / 2.0) ** (1.0 / n)
+    if k >= n:
+        return (alpha / 2.0) ** (1.0 / n), 1.0
+    return (_beta_inv(alpha / 2.0, k, n - k + 1),
+            _beta_inv(1 - alpha / 2.0, k + 1, n - k))
+
+
+def _betainc(a, b, x):
+    """正则化不完全 Beta 函数 I_x(a,b)（Lentz 连分数，标准实现）。"""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    lbeta = (math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+             + a * math.log(x) + b * math.log(1.0 - x))
+    if x < (a + 1.0) / (a + b + 2.0):
+        return math.exp(lbeta) * _betacf(a, b, x) / a
+    return 1.0 - math.exp(lbeta) * _betacf(b, a, 1.0 - x) / b
+
+
+def _betacf(a, b, x):
+    """连分数展开（Lentz 算法）。"""
+    tiny = 1e-30
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < tiny:
+        d = tiny
+    d = 1.0 / d
+    h = d
+    for m in range(1, 300):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        if abs(d) < tiny:
+            d = tiny
+        c = 1.0 + aa / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        if abs(d) < tiny:
+            d = tiny
+        c = 1.0 + aa / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        de = d * c
+        h *= de
+        if abs(de - 1.0) < 1e-12:
+            break
+    return h
+
+
+def _beta_inv(p, a, b):
+    """Beta 分布分位数的数值反解（二分）。"""
+    lo, hi = 0.0, 1.0
+    for _ in range(80):
+        mid = (lo + hi) / 2.0
+        if _betainc(a, b, mid) < p:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
+def score_accuracy(f1, tp=0, fn=0, fp=0, tn=0):
+    """准确度得分 —— 同时给出「这个分数有多可信」。
+
+    只报 F1 是误导：n=5 的满分与 n=500 的满分完全不是一回事。
+    """
     if f1 is None:
         return 0.0, "F1 不可计算（该轮无正/负样本）"
-    return round(f1 * ACCURACY_POINTS, 1), "F1=%.3f × %d" % (f1, ACCURACY_POINTS)
+
+    n_pos = tp + fn
+    n_neg = fp + tn
+    notes = []
+    if n_pos:
+        lo, _ = _clopper_pearson(tp, n_pos)
+        notes.append("敏感度 %.1f%%（95%% 下限 %.1f%%，n=%d）"
+                     % (100.0 * tp / n_pos, 100.0 * lo, n_pos))
+    if n_neg:
+        _, hi = _clopper_pearson(fp, n_neg)
+        notes.append("误报率上限 %.1f%%（n=%d）" % (100.0 * hi, n_neg))
+
+    sample = tp + fn + fp + tn
+    warn = "  ⚠ 样本量 %d，不可外推" % sample if sample < 30 else ""
+    detail = "F1=%.3f × %d；%s%s" % (f1, ACCURACY_POINTS, "；".join(notes), warn)
+    return round(f1 * ACCURACY_POINTS, 1), detail
 
 
 def score_speed(seconds):
@@ -138,7 +239,8 @@ def score_report(report):
     agg = report["aggregate"]
     rows = []
 
-    pts, why = score_accuracy(agg.get("f1"))
+    pts, why = score_accuracy(agg.get("f1"), agg.get("tp", 0), agg.get("fn", 0),
+                              agg.get("fp", 0), agg.get("tn", 0))
     rows.append(("准确度", pts, ACCURACY_POINTS, why))
 
     max_sec = max((r.get("seconds", 0) for r in report["results"]), default=0)

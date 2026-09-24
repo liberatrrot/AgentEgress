@@ -1,13 +1,13 @@
 {
-  "time": "2026-09-24 21:26:02",
+  "time": "2026-09-24 21:35:34",
   "ok": true,
   "results": [
     {
       "name": "语法编译",
       "ok": true,
-      "detail": "3110 行",
+      "detail": "3297 行",
       "extra": {
-        "lines": 3110
+        "lines": 3297
       }
     },
     {
@@ -85,6 +85,21 @@
             "ok": true,
             "note": "上限 5 生效且标记 truncated"
           }
+        ]
+      }
+    },
+    {
+      "name": "近负样本",
+      "ok": true,
+      "detail": "5 类正常场景均未触发阻断级结论",
+      "extra": {
+        "problems": [],
+        "details": [
+          "auto_update: 链0 高危confirmed0",
+          "telemetry: 链0 高危confirmed0",
+          "crash_report: 链0 高危confirmed0",
+          "oss_export: 链0 高危confirmed0",
+          "local_crypto: 链0 高危confirmed0"
         ]
       }
     },

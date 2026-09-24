@@ -373,6 +373,94 @@ def check_cli(quick=False):
                   {"problems": problems})
 
 
+def check_near_negative():
+    """近负样本：正常、但「像」外传的场景。
+
+    为什么单独做这一节：外部评审指出，对安全工具，真正难的不是发现恶意，
+    而是**不误报正常**。而最容易被误报的恰恰是这些——真实客户端里到处都有：
+
+        auto_update   自动更新：下载安装包   （下载 ≠ 上传）
+        telemetry     匿名遥测上报
+        crash_report  崩溃堆栈上报
+        oss_export    正常使用 OSS SDK 做用户主动导出
+        local_crypto  本地文件加密存储（不联网）
+
+    判据不是「不能检出任何能力」（它们确实有 fetch / 有加密），
+    而是**不能出现阻断级组合链，也不能把高危能力判成 confirmed**。
+    这就是「能力 vs 风险」的边界：能力为真不代表风险为真。
+    """
+    import agentegress as ae
+
+    tmp = tempfile.mkdtemp(prefix="egress-nearneg-")
+    scenarios = {
+        "auto_update": (
+            "// 自动更新：只下载，不上传\n"
+            "async function checkUpdate(){const r=await fetch('https://dl.example.com/latest.yml');"
+            "const y=await r.text();return y;}\n"
+            "function verifySha256(buf,expect){return createHash('sha256').update(buf).digest('hex')===expect;}\n"
+            "// electron-updater 的标准用法，不含任何用户数据采集\n"
+        ),
+        "telemetry": (
+            "// 匿名遥测：只上报事件名与版本号\n"
+            "function reportEvent(name,props){fetch('https://telemetry.example.com/v1/events',"
+            "{method:'POST',body:JSON.stringify({name,props,version:APP_VERSION})});}\n"
+            "setInterval(()=>reportEvent('heartbeat',{}),60000);\n"
+        ),
+        "crash_report": (
+            "// 崩溃上报：只发堆栈与平台信息\n"
+            "process.on('uncaughtException',(e)=>{fetch('https://crash.example.com/api/report',"
+            "{method:'POST',body:JSON.stringify({stack:e.stack,platform:process.platform})});});\n"
+        ),
+        "oss_export": (
+            "// 用户主动导出：用户点按钮才发生，目标桶由用户自己配置\n"
+            "exportButton.onClick(async()=>{const cred=await api.post('/user/oss-token');"
+            "const fd=new FormData();fd.append('key',cred.path);fd.append('policy',cred.policy);"
+            "fd.append('x-oss-signature',cred.signature);"
+            "await fetch(cred.host,{method:'POST',body:fd});});\n"
+        ),
+        "local_crypto": (
+            "// 本地加密存储：加密后写本地文件，不联网\n"
+            "import {createCipheriv,randomBytes} from 'node:crypto';\n"
+            "function saveLocal(data){const key=randomBytes(32);const iv=randomBytes(16);"
+            "const c=createCipheriv('aes-256-gcm',key,iv);"
+            "fs.writeFileSync('./vault.bin',Buffer.concat([c.update(data),c.final()]));}\n"
+        ),
+    }
+
+    problems = []
+    details = []
+    try:
+        for name, code in scenarios.items():
+            d = os.path.join(tmp, name)
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "main.js"), "w", encoding="utf-8") as f:
+                f.write(code)
+            acc = ae.CapabilityAccumulator()
+            _h, _meta = ae.audit_path(d, acc=acc)
+            caps = ae.aggregate_from_buckets(acc)
+            lv = {c["id"]: c["level"] for c in caps}
+            chains = ae.detect_chains(caps)
+
+            blocking = [c["name"] for c in chains if c["level"] == "blocking"]
+            high_conf = [c["name"] for c in caps
+                         if c["level"] == "confirmed" and c["risk"] == "high"]
+
+            if blocking:
+                problems.append("%s 触发了阻断级组合链：%s" % (name, blocking))
+            if high_conf:
+                problems.append("%s 把高危能力判成 confirmed：%s" % (name, high_conf))
+            details.append("%s: 链%d 高危confirmed%d" % (name, len(chains), len(high_conf)))
+    except Exception as e:                          # noqa: BLE001
+        problems.append("近负样本检查异常：%r" % e)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    return record("近负样本", not problems,
+                  "%d 类正常场景均未触发阻断级结论" % len(scenarios)
+                  if not problems else "；".join(problems[:3]),
+                  {"problems": problems, "details": details})
+
+
 # ---------------------------------------------------------------- 5. 大样本（可选）
 
 def check_full():
@@ -441,6 +529,7 @@ def main():
     check_selfcheck()
     check_regression(quick=quick)
     check_robustness()
+    check_near_negative()
     check_cli(quick=quick)
     if full:
         check_full()

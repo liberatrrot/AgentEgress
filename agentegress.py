@@ -906,7 +906,17 @@ class AsarError(Exception):
 class AsarArchive:
     """只读的 asar 归档访问器。"""
 
-    MAX_HEADER = 256 * 1024 * 1024
+    # 目录树 JSON 的尺寸上限。
+    #
+    # 原值是 256 MB，等于允许一个 144 字节的恶意文件让审计器分配 256 MB
+    # （评审实测：声明 json_size=MAX_HEADER，f.read() 会先按声明长度分配，
+    # 实际只填进 144 字节——放大倍数约 1.86×10⁶）。
+    #
+    # 取值必须同时满足两条：
+    #   1. 放得下真实归档 —— 本机实测最大是 ZCode 的 6.7 MB（26785 条目），
+    #      Kimi gateway 4.15 MB、WorkBuddy 5.15 MB。曾想改成 4 MB，**那会把 ZCode 拒掉**。
+    #   2. 压得住放大 —— 32 MB 把放大倍数从 1.86×10⁶ 降到 2.3×10⁵，且是硬上限。
+    MAX_HEADER = 32 * 1024 * 1024
 
     def __init__(self, path):
         self.path = path
@@ -1440,10 +1450,41 @@ def _build_prefilter():
                 kws.update(k.lower() for k in ks)
     if missing:
         raise RuntimeError("预筛表缺少 pattern，会导致漏报，拒绝启动：%s" % missing)
-    return re.compile("|".join(re.escape(k) for k in sorted(kws, key=len, reverse=True)), re.I)
+    # 长关键词优先：更具体的关键词命中概率低但判别性强，短词权重低；
+    # 实测排序对总耗时影响不大（见下），这里只是让它更可预测。
+    return tuple(sorted(kws, key=len, reverse=True))
 
 
-_KW_FILTER = _build_prefilter()
+_KW_TUPLE = _build_prefilter()
+
+
+def _prefilter_hit(text):
+    """预筛：任一关键词出现即放行。
+
+    【为什么不用一条合并的 alternation 正则】
+    实测（tests/review/v4_prefilter_bench.py，2 MB 输入）：
+
+        样本               alternation 正则    逐关键词 in      倍数
+        纯 a 串（最坏）            1.653 s        0.257 s     6.4x
+        重复 policy               1.823 s        0.134 s    13.6x
+        正常 JS 片段              1.868 s        0.130 s    14.4x
+        含命中                    0.0008 s       0.115 s    0.0x（正则快）
+
+    即：**不命中时 `in` 快 6~14 倍，命中时正则快很多**。
+    但预筛只在「不命中」时才需要快——一旦命中，后面 56 条正则的开销
+    远超预筛本身，那 0.1 秒完全不值一提。
+
+    根因：alternation 正则对不匹配的长文本要在**每个字符位置尝试所有分支**；
+    而 `in` 是 C 实现的 two-way 搜索，且可短路。
+
+    关键词全部小写、文本可能大小写混合，所以先 lower() 一次。
+    这一步仍划算：2 MB 输入 lower() 约 15 ms，而 alternation 正则是 1650 ms。
+    """
+    low = text.lower()
+    for k in _KW_TUPLE:
+        if k in low:
+            return True
+    return False
 
 
 def _check_weight_ceiling():
@@ -1546,7 +1587,7 @@ def _check_keyword_consistency():
             if pat["re"].search(sample) is None:
                 unverifiable.append(pat["id"])
                 continue
-            if _KW_FILTER.search(sample) is None:
+            if not _prefilter_hit(sample):
                 bad.append("%s(样例=%r)" % (pat["id"], sample[:40]))
     if bad:
         raise RuntimeError(
@@ -1653,8 +1694,8 @@ def scan_text_for_capabilities(rel_path, text, lang, bundled=False):
         return []
 
     # ---- 预筛：不命中任何关键词就直接返回 ----
-    # 这一步把「每文件 54 个正则」降到「每文件 1 个正则」，是最大的性能杠杆。
-    if _KW_FILTER.search(text) is None:
+    # 这一步把「每文件 56 个正则」降到「每文件一次关键词检查」，是最大的性能杠杆。
+    if not _prefilter_hit(text):
         return []
 
     segs = lex_regions(text, lang)
@@ -1869,6 +1910,98 @@ def _downgrade(verdict):
     return _VERDICT_ORDER[min(i + 1, len(_VERDICT_ORDER) - 1)]
 
 
+# ---------------- 组合链：从「能力列表」到「数据流链」 ----------------
+#
+# 外部评审的核心建议：真正危险的不是「代码里出现过哪些危险关键词」，
+# 而是「有没有一条合理的路径，能把用户的工作区送出去」。
+# telemetry 和 workspace_snapshot 并列展示会误导——它们不是同一维度：
+#   数据范围（telemetry / 元数据 / 源码 / 整个工作区）
+#   × 变换（打包 / 压缩 / 加密）
+#   × 外传通道（HTTPS / OSS / S3 / DNS）
+#   × 触发方式（启动 / 定时 / 用户事件 / 未知）
+#
+# 所以除了逐条列能力，还要回答：**这些能力凑起来构成哪条链路？**
+COMBINED_CHAINS = [
+    {
+        "id": "workspace_to_object_storage",
+        "name": "工作区 → 加密归档 → 对象存储直传",
+        "requires": ["workspace_snapshot", "envelope_encryption", "object_storage_upload"],
+        "level": "blocking",
+        "desc": "这条链路能把整个工作区（含 .git 历史）打包加密后直接投递到对象存储，"
+                "不经过自建服务端——正是 ZCode 事件的形态",
+    },
+    {
+        "id": "workspace_to_credential_api",
+        "name": "工作区 → 申请上传凭证 → 远端",
+        "requires": ["workspace_snapshot", "upload_credential_api"],
+        "level": "blocking",
+        "desc": "存在「采集工作区 → 申请上传凭证 → 投递」的完整调用链",
+    },
+    {
+        "id": "archive_then_upload",
+        "name": "批量打包 → 外传",
+        "requires": ["bulk_archive", "object_storage_upload"],
+        "level": "serious",
+        "desc": "存在「批量收集文件 → 打包 → 外传」的路径",
+    },
+    {
+        "id": "git_history_exfil",
+        "name": "Git 历史 → 外传",
+        "requires": ["git_history_access", "object_storage_upload"],
+        "level": "serious",
+        "desc": "能读到 .git 内部对象并具备外传通道——历史中可能残留已删除的密钥",
+    },
+    {
+        "id": "credential_harvest",
+        "name": "凭据采集 → 外传",
+        "requires": ["credential_access", "object_storage_upload"],
+        "level": "blocking",
+        "desc": "存在「读取本机凭据文件（.ssh/.aws/.npmrc 等）→ 外传」的路径",
+    },
+    {
+        "id": "config_exfil",
+        "name": "跨工作区配置 → 外传",
+        "requires": ["global_config_collection", "object_storage_upload"],
+        "level": "serious",
+        "desc": "采集范围超出单个工作区，且具备外传通道",
+    },
+]
+
+
+def detect_chains(caps):
+    """从能力画像里识别「组合链」。
+
+    一条链成立的条件：它要求的每个能力都达到 likely 以上。
+    这比单看某一项更有判断价值——`object_storage_upload` 本身可能只是
+    「支持导出到用户自己的云盘」，但叠加 `workspace_snapshot` 与自动触发就完全是另一回事。
+    """
+    lv = {c["id"]: c["level"] for c in caps}
+    ok = ("confirmed", "likely")
+    out = []
+    for chain in COMBINED_CHAINS:
+        need = chain["requires"]
+        missing = [x for x in need if lv.get(x) not in ok]
+        if missing:
+            continue
+        hit = [c for c in caps if c["id"] in need]
+        out.append({
+            "id": chain["id"],
+            "name": chain["name"],
+            "level": chain["level"],
+            "desc": chain["desc"],
+            "evidence": [{"cap": c["id"], "name": c["name"], "level": c["level"],
+                          "patterns": c["pattern_count"], "files": c["file_count"],
+                          "hits": c.get("hit_total", 0)} for c in hit],
+            # 触发方式：链上若有任一能力被判为「自动」，则整条链的性质就变了
+            "auto_trigger": any(
+                (c.get("trigger_hint") or {}).get("verdict") == "automatic" for c in hit),
+            "evidence_count": sum(c.get("hit_total", 0) for c in hit),
+        })
+    order = {"blocking": 0, "serious": 1}
+    out.sort(key=lambda x: (order.get(x["level"], 9), -x["evidence_count"]))
+    return out
+
+
 def summarize_capabilities(caps, coverage=None):
     """整体定性——给一个可读的结论，不给假的精确数字。
 
@@ -1912,26 +2045,37 @@ def summarize_capabilities(caps, coverage=None):
     # 都会触发，于是等级被恒压成 INFO、结构化计数恒为 0/0/0 —— 结论失去可用性。
     # 现在的处理是：截断仍降级（因为缺口无法量化），但**明确给出重跑命令**，
     # 让读者知道下一步做什么，而不是只丢一个「不可用」。
+    #
+    # status 三态（外部评审要求）：扫描失败与「没发现问题」绝不能是同一个状态。
+    #   complete  无技术性缺口
+    #   partial   有缺口，结论已降级 / 加限定，仍可用
+    #   error     缺口大到无法支撑任何结论
+    status = "complete"
     if coverage:
         gaps = coverage.get("gaps", 0)
         cand = max(1, coverage.get("candidates", 0) + coverage.get("skipped_other", 0))
         ratio = gaps / float(cand)
         if coverage.get("truncated"):
+            status = "error"
             verdict = "info"
             text = ("扫描被截断（目录超过 --static-max-files 上限），缺口无法量化，"
                     "结论不可用；请用更大的 --static-max-files 重跑")
         elif ratio > 0.20:
+            status = "error"
             verdict = "info"
             text = ("缺口过大（%d/%d 个候选文件未覆盖），证据不足以支撑结论"
                     % (gaps, cand))
         elif ratio > 0.05:
+            status = "partial"
             verdict = _downgrade(verdict)
             text += "（注意：%d 个候选文件未覆盖，结论可信度已下调一档）" % gaps
         elif gaps:
+            status = "partial"
             text += "（注意：%d 个文件未覆盖，详见覆盖台账）" % gaps
 
     return {
         "verdict": verdict,
+        "status": status,
         "text": text,
         "ratio": round(ratio, 3),
         "confirmed": len(confirmed),
@@ -2149,6 +2293,7 @@ def audit_targets(tool, extra_paths=None, max_files=2500, include_vendor=False):
     return {
         "targets": results,
         "capabilities": caps,
+        "chains": detect_chains(caps),
         "summary": summary,
         "coverage": coverage,
         "total_hits": acc.total_hits,
@@ -2182,6 +2327,8 @@ def json_static(st):
         # coverage 必须进 JSON：只读 JSON 的下游（自动化审计就是这种）
         # 若拿不到「截断了 / 有 N 个文件没读成」，就只能看到一个孤零零的结论。
         "coverage": st.get("coverage"),
+        # 组合链同理：它才是「有没有一条路径能把工作区送出去」的答案
+        "chains": st.get("chains") or [],
         "files_scanned": st["files_scanned"],
         "bytes_scanned": st["bytes_scanned"],
         "total_hits": st.get("total_hits", 0),
@@ -2315,6 +2462,21 @@ def render_text(results, meta):
                     L.append("       以上缺口意味着「未检出」≠「已排除」，请结合覆盖台账理解结论")
                 else:
                     L.append("    因技术原因未覆盖: 0 项")
+
+            # 组合链：从「能力列表」升级到「数据流链」——
+            # 回答用户真正关心的问题：「有没有一条合理的路径能把我的工作区送出去？」
+            chains = st.get("chains") or []
+            if chains:
+                L.append("    [组合链] 以下能力凑成了可追踪的数据流路径：")
+                for ch in chains[:5]:
+                    mark = "[阻断级]" if ch["level"] == "blocking" else "[严重]  "
+                    L.append("      %s %s" % (mark, ch["name"]))
+                    L.append("         %s" % ch["desc"])
+                    L.append("         证据: %s" % " + ".join(
+                        "%s(%s/%d处)" % (e["name"], e["level"], e["hits"])
+                        for e in ch["evidence"]))
+                    if ch["auto_trigger"]:
+                        L.append("         触发: 链上存在「自动触发」的能力（性质不同于用户主动）")
             tmap = {"automatic": "自动", "user_initiated": "用户主动",
                     "mixed": "混合", "unknown": "未判定"}
             for c in st["capabilities"]:
@@ -2889,6 +3051,31 @@ def render_html(results, meta):
                                 cov.get("read_errors", 0)))
                 else:
                     P.append('<br>因技术原因未覆盖：0 项')
+                P.append('</div>')
+
+            # 组合链：报告的核心价值在这里——不是「出现过哪些危险关键词」，
+            # 而是「有没有一条合理的路径能把工作区送出去」。
+            chains = st.get("chains") or []
+            if chains:
+                P.append('<div class="sec"><h3>组合链（数据流路径）</h3>')
+                P.append('<div class="sub small" style="margin-bottom:8px">'
+                         '单项能力可能各自无害（比如「支持导出到用户自己的云盘」），'
+                         '但凑成链路后性质就变了。以下链路要求每个环节都达到 likely 以上。</div>')
+                for ch in chains:
+                    blocking = ch["level"] == "blocking"
+                    P.append('<div class="why %s" style="margin-bottom:8px">'
+                             % ("crit" if blocking else "med"))
+                    P.append('<b>%s</b> %s<br>'
+                             % ("[阻断级]" if blocking else "[严重]", esc(ch["name"])))
+                    P.append('<span class="sub small">%s</span><br>' % esc(ch["desc"]))
+                    P.append('<span class="small mono">证据链：%s</span>'
+                             % esc(" → ".join(
+                                 "%s(%s, %d处命中)" % (e["name"], e["level"], e["hits"])
+                                 for e in ch["evidence"])))
+                    if ch["auto_trigger"]:
+                        P.append('<br><span class="small"><b>触发方式：链上存在「自动触发」'
+                                 '的能力</b>——其性质与「用户主动」完全不同</span>')
+                    P.append('</div>')
                 P.append('</div>')
 
             shown = [c for c in st["capabilities"] if c["level"] != "absent"]
