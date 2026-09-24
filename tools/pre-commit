@@ -1,0 +1,32 @@
+#!/bin/sh
+# AgentEgress pre-commit 钩子
+#
+# 只在 agentegress.py 被改动时跑验收；改文档、改测试数据不拦。
+# 用 --quick 跳过最大的 ZCode asar 样本，把耗时压在 ~25 秒。
+#
+# 安装（一次性）：
+#     git config core.hooksPath tools
+# 临时绕过（不推荐）：
+#     git commit --no-verify
+#
+# 把它放在版本库里而不是 .git/hooks/ 里，理由与指纹库要用 git 管理是同一条：
+# 自己要求别人做到的可审计性，自己得先做到。
+
+PY="python3"
+[ -f "$PY" ] || PY="python3"
+command -v "$PY" >/dev/null 2>&1 || PY="python"
+command -v "$PY" >/dev/null 2>&1 || {
+  echo ">> 找不到 Python，跳过验收（请手动跑 tests/verify.py）"
+  exit 0
+}
+
+if git diff --cached --name-only | grep -q "^agentegress.py$"; then
+  echo ">> agentegress.py 有改动，先跑验收…"
+  if ! "$PY" tests/verify.py --quick; then
+    echo ""
+    echo ">> 验收未通过，提交已拦下。完整结果见 tests/last-verify.txt"
+    echo ">> 如果确认是误报，请先修 verify.py 的用例，不要用 --no-verify 绕过去"
+    exit 1
+  fi
+fi
+exit 0

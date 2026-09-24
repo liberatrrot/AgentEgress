@@ -207,32 +207,6 @@ def human(n):
     return "%.2f PB" % n
 
 
-def stat_tree(root):
-    """只读统计目录：文件数与总字节。返回 (files, bytes)。"""
-    n = 0
-    total = 0
-    stack = [root]
-    while stack:
-        d = stack.pop()
-        try:
-            it = os.scandir(d)
-        except OSError:
-            continue
-        with it:
-            for e in it:
-                try:
-                    if e.is_dir(follow_symlinks=False):
-                        if e.name in SKIP_DIRS:
-                            continue
-                        stack.append(e.path)
-                    elif e.is_file(follow_symlinks=False):
-                        n += 1
-                        total += e.stat(follow_symlinks=False).st_size
-                except OSError:
-                    continue
-    return n, total
-
-
 def safe_load_json(path):
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -804,20 +778,6 @@ def region_at(segs, pos):
     return TK_CODE
 
 
-def line_at(text, pos):
-    """返回 1-based 行号。"""
-    return text.count("\n", 0, pos) + 1
-
-
-def extract_line(text, pos):
-    """取出所在行的内容（裁剪到 200 字符）。"""
-    s = text.rfind("\n", 0, pos) + 1
-    e = text.find("\n", pos)
-    e = len(text) if e < 0 else e
-    line = text[s:e].strip()
-    return line[:200]
-
-
 def decode_bytes(blob):
     """把文件字节解成文本，处理 UTF-8 / UTF-16 BOM 与无 BOM 的 UTF-16。
 
@@ -862,15 +822,6 @@ def _line_idx(starts, pos):
 def line_no_at(starts, pos):
     """1-based 行号。"""
     return _line_idx(starts, pos) + 1
-
-
-def line_text_at(text, starts, pos):
-    li = _line_idx(starts, pos)
-    if li < 0:
-        li = 0
-    s = starts[li]
-    e = starts[li + 1] - 1 if li + 1 < len(starts) else len(text)
-    return text[s:e].strip()[:200]
 
 
 def context_window(text, starts, pos, radius=3):
@@ -1251,11 +1202,22 @@ FILE_CLASS_WEIGHT = {
 #   线性膨胀、失去区分度（第一版就在这里翻车：1 个弱模式拿了 191 分）。
 #   多样性系数只用来区分「孤立一处」与「多处印证」，幅度刻意做得平缓。
 #
-# 等级阈值三条件同时满足才成立——单一维度分数高不算数。
+# 每个能力的「模式权重和」——归一化的分母。
+#
+# 为什么必须归一化（评审指出）：单个模式贡献 ≤ 它自己的权重，
+# 所以能力总分的上限就是该能力的权重和。用绝对分做阈值意味着
+# 「这个能力的模式库里写了几个模式」会直接决定它能到哪个等级——
+# shell_execution 权重和 17 < 阈值 18，于是「能执行命令」这个能力
+# 在数学上永远上不了 confirmed，与证据强度无关。
+# 归一化后分数变成「证据覆盖率」，跨能力可比，天花板问题消失。
+CAP_WEIGHT_SUM = {c["id"]: sum(p["w"] for p in c["patterns"]) for c in CAPABILITY_DEFS}
+
+# 等级阈值：norm = 能力总分 / 该能力的模式权重和（0~1）。
+# 三条件同时满足才成立——单一维度高不算数。
 GRADE_THRESHOLDS = [
-    ("confirmed", {"score": 18.0, "patterns": 3, "files": 2}),
-    ("likely",    {"score": 8.0,  "patterns": 2, "files": 1}),
-    ("possible",  {"score": 3.0,  "patterns": 1, "files": 1}),
+    ("confirmed", {"norm": 0.55, "patterns": 3, "files": 2}),
+    ("likely",    {"norm": 0.30, "patterns": 2, "files": 1}),
+    ("possible",  {"norm": 0.12, "patterns": 1, "files": 1}),
 ]
 
 CAP_RISK_WEIGHT = {"high": 3, "medium": 2, "low": 1}
@@ -1416,26 +1378,22 @@ _KW_FILTER = _build_prefilter()
 
 
 def _check_weight_ceiling():
-    """启动自检：每个能力的「模式权重和」必须 ≥ confirmed 的分数阈值。
+    """启动自检：每个能力必须有模式，且模式权重和为正值。
 
-    为什么需要：单个模式的贡献 ≤ 它自己的权重（基础分 = 权重 × 区域系数 × 文件类别系数，
-    两个系数都 ≤1），所以**能力总分上限 = 该能力所有模式的权重和**。
-    若某能力的权重和低于 confirmed 阈值，它在数学上永远不可能被判为 confirmed，
-    不管证据多强——这与证据强度无关，纯属权重表的算术缺陷。
-
-    这个问题真实发生过：评审发现 shell_execution 的权重和是 17，而 confirmed 阈值是 18，
-    即「能执行命令」这个能力永远上不了最高档。修法是补模式，并加这道自检防止复发。
+    历史：v0.2.1 之前用**绝对分**做阈值，而单个模式贡献 ≤ 其权重，
+    于是「能力总分上限 = 模式权重和」——shell_execution 权重和 17 < 阈值 18，
+    「能执行命令」这个能力在数学上永远上不了 confirmed。
+    v0.2.2 起改为**归一化**（norm = 得分 / 权重和），天花板问题自动消失，
+    这道自检就退化为守住除零与空模式库两条底线。
     """
-    need = GRADE_THRESHOLDS[0][1]["score"]
-    short = []
+    bad = []
     for cap in CAPABILITY_DEFS:
-        total = sum(p["w"] for p in cap["patterns"])
-        if total < need:
-            short.append("%s(权重和=%.0f)" % (cap["id"], total))
-    if short:
-        raise RuntimeError(
-            "以下能力的模式权重和低于 confirmed 阈值 %.0f，将永远无法判定为 confirmed：%s"
-            % (need, "、".join(short)))
+        if not cap.get("patterns"):
+            bad.append("%s(无模式)" % cap["id"])
+        elif sum(p["w"] for p in cap["patterns"]) <= 0:
+            bad.append("%s(权重和非正)" % cap["id"])
+    if bad:
+        raise RuntimeError("以下能力的模式库不合法，拒绝启动：%s" % "、".join(bad))
     return True
 
 
@@ -1589,7 +1547,21 @@ def classify_file(rel_path, bundled=False):
     return "other"
 
 
-def _region_ok(required, kind):
+def _region_ok(required, kind, relaxed=False):
+    """判定某个匹配是否满足该模式对区域的要求。
+
+    relaxed=True 用于 JSON / YAML 这类**没有注释语法**的格式：
+    它们的内容全是值语境，不存在「注释里提一句」这种噪音，
+    所以不应该用「代码区 / 字符串区」去卡它。
+
+    这个问题真实存在过：54 个模式里有 18 个要求 region="code"，
+    而 `lex_regions()` 把整个 .json 判成 TK_STRING，
+    于是这 18 个模式在任何 JSON 文件里**永远不可能命中**——
+    与此同时 FILE_CLASS_WEIGHT["config"] 却是第二高的 0.90，
+    等于一边说配置是高价值证据，一边让三分之一的模式在配置里失效。
+    """
+    if relaxed:
+        return True
     if required == "code":
         return kind == TK_CODE
     if required == "string":
@@ -1615,6 +1587,8 @@ def scan_text_for_capabilities(rel_path, text, lang, bundled=False):
 
     segs = lex_regions(text, lang)
     starts = line_starts_index(text)
+    # JSON / YAML 没有注释语法，不存在「注释里提到」的噪音，不做区域区分
+    relaxed = lang in ("json", "yaml", "toml")
     fclass = classify_file(rel_path, bundled=bundled)
     fw = FILE_CLASS_WEIGHT.get(fclass, 0.6)
     raw = []
@@ -1624,7 +1598,7 @@ def scan_text_for_capabilities(rel_path, text, lang, bundled=False):
             matches = []
             for m in pat["re"].finditer(text):
                 kind = region_at(segs, m.start())
-                if not _region_ok(pat["region"], kind):
+                if not _region_ok(pat["region"], kind, relaxed):
                     continue
                 matches.append((m.start(), kind))
                 if len(matches) >= 6:      # 单文件单模式最多取 6 处
@@ -1746,19 +1720,26 @@ def aggregate_from_buckets(acc):
         n_pat = len(c["patterns"])
         n_file = len(c["files"])
         score = round(c["score"], 2)
+        wsum = CAP_WEIGHT_SUM.get(c["id"]) or 1
+        norm = score / float(wsum)
         level = "absent"
         for name, th in GRADE_THRESHOLDS:
-            if score >= th["score"] and n_pat >= th["patterns"] and n_file >= th["files"]:
+            if norm >= th["norm"] and n_pat >= th["patterns"] and n_file >= th["files"]:
                 level = name
                 break
-        # 强单证据抬升：upload-credential 这种词几乎不可能是巧合，
-        # 但只在它出现在生产代码 / 配置里时才抬升（文档里提一句不算）
-        if level == "possible" and c["strong_in_prod"]:
+        # 强单证据抬升：upload-credential 这类词几乎不可能是巧合。
+        # 但要求「至少 2 个模式命中」或「同一模式出现 ≥3 次」——
+        # 否则一条孤立的字符串命中（比如某句错误提示里提到这个词）
+        # 就能把等级抬到 likely，这是评审指出的误判方向之一。
+        if (level == "possible" and c["strong_in_prod"]
+                and (n_pat >= 2 or c["hit_total"] >= 3)):
             level = "likely"
 
         c["pattern_count"] = n_pat
         c["file_count"] = n_file
         c["score"] = score
+        c["norm"] = round(norm, 4)
+        c["weight_sum"] = wsum
         c["level"] = level
         c["trigger_hint"] = infer_trigger_counts(c["auto_signals"], c["user_signals"])
         c["hits"].sort(key=lambda x: (-x["weight"], x["file"]))
@@ -1786,14 +1767,20 @@ def aggregate_capabilities(raw_hits):
 def infer_trigger_counts(auto, user):
     """根据全量命中里的信号计数推断触发方式。
 
-    这是**推断不是事实**：ZCode 的教训正是「同一个架构，触发条件一改性质就变了」。
+    推断不是事实——ZCode 的教训正是「同一个架构，触发条件一改性质就变了」，
     所以输出永远标注为「推断」，不写进结论、不参与风险评级。
+
+    门槛（v0.2.2 收紧）：信号总数不足 5 条时直接判「未判定」。
+    评审在真实报告里发现 `browser_state_access`（2 个模式 / 27 个文件 / 75 处命中）
+    的触发方式**由 1 个信号词决定**——那不是推断，是掷骰子。
+    宁可不给结论，也不要给一个看起来像结论的猜测。
     """
-    if auto == 0 and user == 0:
-        return {"verdict": "unknown", "auto": 0, "user": 0}
-    if auto >= user * 2:
+    total = auto + user
+    if total < 5:
+        return {"verdict": "unknown", "auto": auto, "user": user}
+    if auto >= user * 3:
         return {"verdict": "automatic", "auto": auto, "user": user}
-    if user >= auto * 2:
+    if user >= auto * 3:
         return {"verdict": "user_initiated", "auto": auto, "user": user}
     return {"verdict": "mixed", "auto": auto, "user": user}
 
@@ -2515,8 +2502,18 @@ document.addEventListener('keydown', function(e){
 """
 
 
-def _badge(level):
+def _badge(level, risk=None):
+    """能力等级徽章。
+
+    传了 risk 时按「风险」着色、按「等级」写字——这是评审要求的关键区分：
+    原先徽章只看 level，导致 telemetry_egress（所有工具都有的常规遥测，risk=low）
+    和 workspace_snapshot（会传整仓，risk=high）拿到完全相同的红色 CONFIRMED 徽章，
+    非技术读者会把「有遥测」和「会传整仓」等同起来。
+    """
     lv = (level or "info").lower()
+    if risk and lv in ("confirmed", "likely", "possible"):
+        tone = {"high": "crit", "medium": "high", "low": "info"}.get(risk, "info")
+        return '<span class="badge b-%s">%s</span>' % (tone, html.escape(lv.upper()))
     cls = "b-" + lv.replace("/", "")
     return '<span class="badge %s">%s</span>' % (cls, html.escape(lv.upper()))
 
@@ -2533,10 +2530,19 @@ def _strength(level, pattern_count):
     return min(100, base + min(28, pattern_count * 9))
 
 
-def _bar(level, pattern_count):
+def _bar(level, pattern_count, risk=None):
+    """证据强度条。
+
+    条长 = 证据有多硬（等级 + 模式多样性）；颜色 = 风险有多高（risk）。
+    两者分开，读者才能一眼分清「证据确凿但无所谓」和「证据确凿且危险」。
+    """
     pct = max(4, _strength(level, pattern_count))
-    color = {"confirmed": "var(--crit)", "likely": "var(--high)",
-             "possible": "var(--med)", "absent": "var(--tx3)"}.get(level, "var(--tx3)")
+    if risk:
+        color = {"high": "var(--crit)", "medium": "var(--high)",
+                 "low": "var(--tx3)"}.get(risk, "var(--tx3)")
+    else:
+        color = {"confirmed": "var(--crit)", "likely": "var(--high)",
+                 "possible": "var(--med)", "absent": "var(--tx3)"}.get(level, "var(--tx3)")
     return ('<div class="bar"><i style="width:%d%%;background:%s"></i></div>' % (pct, color))
 
 
@@ -2599,11 +2605,21 @@ def render_html(results, meta):
         t = r["report"]
         if not t.get("installed"):
             continue
+        # 搜索索引：必须包含证据（文件名 + 代码片段），否则「搜索证据关键词」是假的
+        ev_parts = []
+        _st_for_search = r.get("static")
+        if _st_for_search:
+            for _c in _st_for_search["capabilities"]:
+                ev_parts.append(_c["name"])
+                ev_parts.extend(_c.get("files", [])[:12])
+                for _h in _c["hits"][:6]:
+                    ev_parts.append(_h.get("file", ""))
+                    ev_parts.append(_h.get("snippet", "")[:120])
         search_blob = " ".join([
             t["name"], t["id"], t.get("vendor", ""),
             " ".join(root["path"] for root in t["roots"]),
             " ".join(w for w in r["reasons"]),
-        ]).lower()
+        ] + ev_parts).lower()
         P.append('<div class="card" data-level="%s" data-search="%s">'
                  % (esc(r["level"]), esc(search_blob)))
         P.append('<div class="card-h">%s<span class="name">%s</span>'
@@ -2733,12 +2749,16 @@ def render_html(results, meta):
                     tr = c.get("trigger_hint") or {}
                     tmap = {"automatic": "自动", "user_initiated": "用户主动",
                             "mixed": "混合", "unknown": "未判定"}
-                    P.append('<tr><td title="模型分 %s"><b>%s</b><div class="sub small">%s</div></td>'
+                    risk_txt = {"high": "高", "medium": "中", "low": "低"}.get(c["risk"], c["risk"])
+                    P.append('<tr><td title="模型分 %s"><b>%s</b>'
+                             '<span class="muted small" style="margin-left:6px">风险:%s</span>'
+                             '<div class="sub small">%s</div></td>'
                              '<td>%s</td><td>%s</td><td class="num" title="%d 个模式 / %d 个文件">%d</td>'
                              '<td class="sub">%s</td></tr>'
-                             % (esc(str(c["score"])), esc(c["name"]), esc(c["desc"]),
-                                _badge(c["level"]),
-                                _bar(c["level"], c["pattern_count"]),
+                             % (esc(str(c["score"])), esc(c["name"]), esc(risk_txt),
+                                esc(c["desc"]),
+                                _badge(c["level"], c["risk"]),
+                                _bar(c["level"], c["pattern_count"], c["risk"]),
                                 c["pattern_count"], c["file_count"], c["hit_total"],
                                 esc(tmap.get(tr.get("verdict"), "—"))))
                     P.append('<tr><td colspan="5" style="padding-top:0;border-bottom:1px solid var(--bd)">')
@@ -2877,6 +2897,14 @@ def main():
                         "外传能力画像：%s（确认 %d / 疑似 %d / 扫描 %d 个文件）"
                         % (sm["text"], sm["confirmed"], sm["likely"],
                            entry["static"]["files_scanned"]))
+                    # 统一口径：--static 与 --static-path 对同一份证据必须给出相同的头条等级。
+                    # 取 M1/M2（数据痕迹）与 M3（能力画像）中更严的那个。
+                    order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4, "n/a": 5}
+                    lvl = cap_level(sm)
+                    if order.get(lvl, 9) < order.get(entry["level"], 9):
+                        entry["reasons"].append(
+                            "　风险等级由静态能力画像提升至 %s" % lvl.upper())
+                        entry["level"] = lvl
 
     level_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4, "n/a": 5}
     results.sort(key=lambda r: level_order.get(r["level"], 9))

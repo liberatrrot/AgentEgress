@@ -1,0 +1,92 @@
+{
+  "time": "2026-09-24 20:34:30",
+  "ok": true,
+  "results": [
+    {
+      "name": "语法编译",
+      "ok": true,
+      "detail": "2950 行",
+      "extra": {
+        "lines": 2950
+      }
+    },
+    {
+      "name": "启动自检",
+      "ok": true,
+      "detail": "12 类能力 / 56 个模式（1 个模式无法自动验证预筛，已记录）",
+      "extra": {
+        "caps": 12,
+        "patterns": 56,
+        "unverifiable": [
+          "log_all"
+        ]
+      }
+    },
+    {
+      "name": "标注回归",
+      "ok": true,
+      "detail": "P=1.000 R=1.000 F1=1.000（TP7 FP0 FN0 TN14，5 例）",
+      "extra": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 7,
+        "fp": 0,
+        "fn": 0,
+        "tn": 14,
+        "failures": []
+      }
+    },
+    {
+      "name": "鲁棒性",
+      "ok": true,
+      "detail": "8/8 通过",
+      "extra": {
+        "passed": 8,
+        "total": 8,
+        "cases": [
+          {
+            "name": "R1 asar 路径穿越防护",
+            "ok": true,
+            "note": "越界条目被拒绝"
+          },
+          {
+            "name": "R2 损坏 asar 不崩溃",
+            "ok": true,
+            "note": "损坏头部被拒绝"
+          },
+          {
+            "name": "R3 超大文件跳过并计数",
+            "ok": true,
+            "note": "跳过 1 个超大文件并计入 skipped_large"
+          },
+          {
+            "name": "R4 UTF-16 文件可命中",
+            "ok": true,
+            "note": "UTF-16LE 命中，等级 possible"
+          },
+          {
+            "name": "R5 二进制垃圾不崩溃",
+            "ok": true,
+            "note": "未崩溃（扫描 1 个文件）"
+          },
+          {
+            "name": "R6 超长单行可命中",
+            "ok": true,
+            "note": "超长单行命中（约 800017 字符）"
+          },
+          {
+            "name": "R7 不存在路径/空目录",
+            "ok": true,
+            "note": "不存在路径报错、空目录正常"
+          },
+          {
+            "name": "R8 目录截断有记录",
+            "ok": true,
+            "note": "上限 5 生效且标记 truncated"
+          }
+        ]
+      }
+    }
+  ]
+}
