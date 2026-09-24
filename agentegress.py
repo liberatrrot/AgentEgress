@@ -2108,10 +2108,15 @@ def detect_chains(caps, acc=None):
             continue
         hit = [c for c in caps if c["id"] in need]
         cohesion, same_files = _cohesion(need, acc)
+        # 关联度决定等级措辞：没有路径证据（co_occur）时不该用「阻断级」这种强断言。
+        # 理由：共现检测不证明它们在同一条路径上，而「阻断级」三个字会被读成结论。
+        level = chain["level"]
+        if cohesion == "co_occur" and level == "blocking":
+            level = "serious"
         out.append({
             "id": chain["id"],
             "name": chain["name"],
-            "level": chain["level"],
+            "level": level,
             "desc": chain["desc"],
             # 类型：明确标注这是「证据共现」而非「数据流」
             "kind": "capability_composition",
