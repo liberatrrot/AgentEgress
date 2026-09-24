@@ -11,22 +11,35 @@
 #
 # 把它放在版本库里而不是 .git/hooks/ 里，理由与指纹库要用 git 管理是同一条：
 # 自己要求别人做到的可审计性，自己得先做到。
+#
+# 【注意】不要用 grep / sed 之类的外部命令：Git for Windows 自带的 sh 环境里
+# 这些命令不一定在 PATH 上。第一版用了 grep，结果静默跳过验收、提交照过——
+# 正是这个项目一直在批评的「静默失效」。现在只用 shell 内置的 case 匹配。
 
 PY="python3"
 [ -f "$PY" ] || PY="python3"
 command -v "$PY" >/dev/null 2>&1 || PY="python"
 command -v "$PY" >/dev/null 2>&1 || {
-  echo ">> 找不到 Python，跳过验收（请手动跑 tests/verify.py）"
+  echo ">> [警告] 找不到 Python，验收被跳过。请手动跑 tests/verify.py"
   exit 0
 }
 
-if git diff --cached --name-only | grep -q "^agentegress.py$"; then
-  echo ">> agentegress.py 有改动，先跑验收…"
-  if ! "$PY" tests/verify.py --quick; then
-    echo ""
-    echo ">> 验收未通过，提交已拦下。完整结果见 tests/last-verify.txt"
-    echo ">> 如果确认是误报，请先修 verify.py 的用例，不要用 --no-verify 绕过去"
-    exit 1
-  fi
-fi
+CHANGED="$(git diff --cached --name-only)"
+
+# 用 case 精确匹配整行（前后加换行，避免子串误配）
+case "
+$CHANGED
+" in
+  *"
+agentegress.py
+"*)
+    echo ">> agentegress.py 有改动，先跑验收…"
+    if ! "$PY" tests/verify.py --quick; then
+      echo ""
+      echo ">> 验收未通过，提交已拦下。完整结果见 tests/last-verify.txt"
+      echo ">> 如果确认是误报，请先修 verify.py 的用例，不要用 --no-verify 绕过去"
+      exit 1
+    fi
+    ;;
+esac
 exit 0

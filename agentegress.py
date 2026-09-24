@@ -45,6 +45,7 @@ import html
 import bisect
 import struct
 import argparse
+from array import array
 
 VERSION = "0.2.2"
 
@@ -634,13 +635,20 @@ _SPECIAL_RE = re.compile(r'["\'`/#]')
 
 _LANG_BY_EXT = {
     ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "js",
+    ".vue": "js", ".svelte": "js",              # 模板 + 脚本，用 js 规则近似
     ".ts": "ts", ".tsx": "ts", ".mts": "ts", ".cts": "ts",
     ".py": "py", ".pyi": "py",
     ".go": "go", ".java": "java", ".rs": "rs",
-    ".c": "c", ".h": "c", ".cpp": "c", ".hpp": "c",
-    ".sh": "sh", ".ps1": "ps1", ".bash": "sh",
-    ".yaml": "yaml", ".yml": "yaml", ".toml": "toml",
-    ".json": "json",
+    ".c": "c", ".h": "c", ".cpp": "c", ".hpp": "c", ".cc": "c", ".m": "c", ".mm": "c",
+    ".sh": "sh", ".bash": "sh", ".zsh": "sh",
+    ".ps1": "ps1", ".bat": "ps1", ".cmd": "ps1",
+    ".yaml": "yaml", ".yml": "yaml", ".toml": "toml", ".ini": "toml", ".cfg": "toml",
+    ".json": "json", ".json5": "json", ".jsonc": "json",
+    # `#` 注释族
+    ".rb": "py", ".pl": "py", ".pm": "py", ".r": "py", ".jl": "py",
+    # `//` + `/* */` 注释族
+    ".php": "js", ".cs": "js", ".swift": "js", ".kt": "js", ".kts": "js",
+    ".scala": "js", ".dart": "js", ".groovy": "js", ".sol": "js",
 }
 
 TK_CODE = "code"
@@ -785,6 +793,22 @@ def region_at(segs, pos):
     return TK_CODE
 
 
+def _looks_like_text(s, sample=4096):
+    """粗略判断一段文本是否「像文本」——用于给编码猜测做复核。
+
+    判据：可打印字符（含常见空白）占比。把 UTF-8 当 UTF-16 解会产出满屏乱码，
+    比例会明显掉下来。门槛取 0.85，宁可放过也不误杀。
+    """
+    seg = s[:sample]
+    if not seg:
+        return False
+    ok = 0
+    for ch in seg:
+        if ch in "\r\n\t" or ch.isprintable():
+            ok += 1
+    return ok / float(len(seg)) > 0.85
+
+
 def decode_bytes(blob):
     """把文件字节解成文本，处理 UTF-8 / UTF-16 BOM 与无 BOM 的 UTF-16。
 
@@ -803,8 +827,12 @@ def decode_bytes(blob):
         return blob[2:].decode("utf-16-be", "ignore")
     head = blob[:4096]
     if head and head.count(0) > len(head) * 0.2:
-        # 无 BOM 但 NUL 占比很高，基本可判为 UTF-16LE
-        return blob.decode("utf-16-le", "ignore")
+        # 无 BOM 但 NUL 占比很高：候选是 UTF-16LE。但必须**复核**再采信——
+        # 评审构造过一个「2000 字节 NUL 前缀 + 正常 UTF-8 正文」的文件，
+        # 整份内容被按 UTF-16 解，8 处命中全都消失，而报告里看不出任何异常。
+        cand = blob.decode("utf-16-le", "ignore")
+        if _looks_like_text(cand):
+            return cand
     return blob.decode("utf-8", "ignore")
 
 
@@ -813,8 +841,13 @@ def line_starts_index(text):
 
     必须做这一步：一次审计可能产生上万个匹配，若每处都 count("\\n") 求行号，
     在 8 MB 文件上就是 O(n^2)。索引是一次 O(n)，之后每次查行号 O(log n)。
+
+    为什么用 array 而不是 list：评审实测一个 8 MB、以换行为主的文件会让
+    `list[int]` 吃掉 323 MB Python 堆（8 字节指针 + int 对象）。
+    array('l') 是紧凑 C 数组，同内容降到约五分之一。
+    `max_file_bytes` 约束的是**文件大小**，不是内存——这条得单独治。
     """
-    starts = [0]
+    starts = array("l", [0])
     i = text.find("\n")
     while i >= 0:
         starts.append(i + 1)
@@ -890,19 +923,48 @@ class AsarArchive:
             self.tree = json.loads(raw.decode("utf-8"))
         except Exception as e:
             raise AsarError("目录树解析失败：%s" % e)
-        self.base = 16 + json_size
+        # 【坑】Chromium pickle 会对 payload 做 4 字节对齐，
+        # 真实数据起点是 16 + align4(json_size)，不是 16 + json_size。
+        #
+        # 这个偏差真实存在：8 个本机 asar 里 6 个 json_size % 4 != 0（含主目标 ZCode），
+        # 于是每个文件整体前移 1~3 字节——开头混进上一个文件的尾字节、末尾丢 1~3 字节。
+        # 用归档内的 .json 当试纸可判定：按 16+json_size 解析成功 0/59，
+        # 按 16+align4(json_size) 成功 59/59（见 tests/review/v3_verify_base.py）。
+        #
+        # 后果不止是内容错位：若前一个文件的尾字节恰是 BOM 前缀（\xff\xfe），
+        # decode_bytes 会把整份文件按 UTF-16 解码 → 预筛零命中 → 报告给出
+        # 「未发现显著外传能力」。这条攻击路径可被构造，属于端到端漏报。
+        self.base = 16 + ((json_size + 3) // 4) * 4
         self.unpacked_dir = path + ".unpacked"
 
-    def iter_files(self, node=None, prefix=""):
-        """产出 (相对路径, 条目字典)。"""
-        node = self.tree if node is None else node
-        for name, item in (node.get("files") or {}).items():
-            p = prefix + "/" + name
-            if "files" in item:
-                for x in self.iter_files(item, p):
-                    yield x
-            else:
-                yield p, item
+    def iter_files(self, node=None, prefix="", max_depth=64):
+        """产出 (相对路径, 条目字典)。
+
+        用**显式栈**而不是递归：畸形归档可以构造上千层嵌套，
+        递归实现会抛 RecursionError（评审实测 depth≈1000 即可触发），
+        而「归档畸形」不该让整轮审计崩掉——那正好给了恶意客户端一个拒绝服务的手段。
+
+        同时做类型防御：tree 不是 dict、item 不是 dict 都跳过而不是抛异常。
+        """
+        root = self.tree if node is None else node
+        if not isinstance(root, dict):
+            raise AsarError("目录树根不是对象（%s）" % type(root).__name__)
+        stack = [(root, prefix, 0)]
+        while stack:
+            cur, cur_prefix, depth = stack.pop()
+            if depth > max_depth:
+                raise AsarError("目录树嵌套超过 %d 层，拒绝继续解析" % max_depth)
+            files = cur.get("files") if isinstance(cur, dict) else None
+            if not isinstance(files, dict):
+                continue
+            for name, item in files.items():
+                if not isinstance(item, dict):
+                    continue
+                p = cur_prefix + "/" + str(name)
+                if "files" in item:
+                    stack.append((item, p, depth + 1))
+                else:
+                    yield p, item
 
     def read(self, rel_path, item, max_bytes=8 * 1024 * 1024):
         """按需读取一个文件的内容（受 max_bytes 限制）。
@@ -1510,8 +1572,11 @@ def classify_file(rel_path, bundled=False):
     p = "/" + rel_path.replace("\\", "/").lower().lstrip("/")
     name = p.rsplit("/", 1)[-1]
 
-    # 第三方依赖：任何模式下都降级
-    if any(x in p for x in ("/node_modules/", "/vendor/", "/third_party/", "/third-party/")):
+    # 第三方依赖：任何模式下都降级。
+    # 这份名单必须与 M3_VENDOR_PARTS 保持一致——曾经漏了 /.pnpm/，
+    # 于是 `--include-vendor` 下 pnpm 装的第三方包会被当成生产代码（权重 ×10）。
+    if any(x in p for x in ("/node_modules/", "/vendor/", "/third_party/",
+                            "/third-party/", "/.pnpm/")):
         return "vendor"
 
     is_types = name.endswith((".d.ts", ".d.mts", ".d.cts")) or "/@types/" in p
@@ -1792,6 +1857,18 @@ def infer_trigger_counts(auto, user):
     return {"verdict": "mixed", "auto": auto, "user": user}
 
 
+_VERDICT_ORDER = ["high", "elevated", "medium", "low", "info"]
+
+
+def _downgrade(verdict):
+    """把结论可信度下调一档（覆盖有缺口时用）。"""
+    try:
+        i = _VERDICT_ORDER.index(verdict)
+    except ValueError:
+        return verdict
+    return _VERDICT_ORDER[min(i + 1, len(_VERDICT_ORDER) - 1)]
+
+
 def summarize_capabilities(caps, coverage=None):
     """整体定性——给一个可读的结论，不给假的精确数字。
 
@@ -1824,18 +1901,34 @@ def summarize_capabilities(caps, coverage=None):
         verdict = "info"
         text = "未发现显著外传能力"
 
-    # —— 覆盖不足时给结论加限定，必要时直接降级 ——
+    # —— 覆盖不足时给结论加限定，必要时降级 ——
+    #
+    # 【坑】原实现里 `miss`（算限定用的缺口数）与 `gaps`（画台账用的缺口数）是两套口径：
+    # miss 只含 skipped_large + truncated，不含 read_errors，于是「7 个文件根本没读成」
+    # 的扫描照样输出「确认存在高危外传能力」且文本里一个「未覆盖」都没有。
+    # 现在统一用 coverage["gaps"]。
+    #
+    # 另一个问题是截断：`--static-path <目录>` 默认 max_files=2500，任何中型源码树
+    # 都会触发，于是等级被恒压成 INFO、结构化计数恒为 0/0/0 —— 结论失去可用性。
+    # 现在的处理是：截断仍降级（因为缺口无法量化），但**明确给出重跑命令**，
+    # 让读者知道下一步做什么，而不是只丢一个「不可用」。
     if coverage:
-        miss = coverage.get("skipped_large", 0) + (1 if coverage.get("truncated") else 0)
-        cand = max(1, coverage.get("candidates", 0))
+        gaps = coverage.get("gaps", 0)
+        cand = max(1, coverage.get("candidates", 0) + coverage.get("skipped_other", 0))
+        ratio = gaps / float(cand)
         if coverage.get("truncated"):
             verdict = "info"
-            text = "扫描被截断（未覆盖全部候选文件），结论不可用"
-        elif miss / cand > 0.05:
+            text = ("扫描被截断（目录超过 --static-max-files 上限），缺口无法量化，"
+                    "结论不可用；请用更大的 --static-max-files 重跑")
+        elif ratio > 0.20:
             verdict = "info"
-            text = "有 %.1f%% 的候选文件未覆盖（体积超限或读取失败），结论不可用" % (100.0 * miss / cand)
-        elif miss:
-            text += "（注意：%d 个文件未覆盖，详见覆盖台账）" % miss
+            text = ("缺口过大（%d/%d 个候选文件未覆盖），证据不足以支撑结论"
+                    % (gaps, cand))
+        elif ratio > 0.05:
+            verdict = _downgrade(verdict)
+            text += "（注意：%d 个候选文件未覆盖，结论可信度已下调一档）" % gaps
+        elif gaps:
+            text += "（注意：%d 个文件未覆盖，详见覆盖台账）" % gaps
 
     return {
         "verdict": verdict,
@@ -1861,7 +1954,8 @@ def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024, acc=None,
     hits = []
     meta = {"path": path, "kind": "dir", "files_scanned": 0, "bytes_scanned": 0,
             "candidates": 0, "skipped_large": 0, "skipped_vendor": 0,
-            "skipped_ext": 0, "truncated": False, "errors": [], "asar": None}
+            "skipped_ext": 0, "skipped_bad_entry": 0, "skipped_other": 0,
+            "truncated": False, "errors": [], "asar": None}
 
     targets = []   # (rel_path, lang, reader)
 
@@ -1872,27 +1966,44 @@ def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024, acc=None,
         except (AsarError, OSError) as e:
             meta["errors"].append("asar 打开失败：%s" % e)
             return hits, meta
-        meta["asar"] = {"tree_entries": sum(1 for _ in ar.iter_files())}
-        for rel, item in ar.iter_files():
-            if len(targets) >= 60000:
-                meta["truncated"] = True
-                meta["errors"].append("归档可扫文件数超过 60000，已截断")
-                break
-            lang = detect_lang(rel)
-            if lang in ("other",):
-                continue
-            meta["candidates"] += 1
-            if rel.endswith((".map", ".min.js", ".min.css")):
-                meta["skipped_ext"] += 1
-                continue
-            if not include_vendor and any(v in _norm(rel) for v in M3_VENDOR_PARTS):
-                meta["skipped_vendor"] += 1
-                continue
-            size = int(item.get("size", 0) or 0)
-            if size > max_file_bytes:
-                meta["skipped_large"] += 1
-                continue
-            targets.append((rel, lang, ("asar", ar, rel, item)))
+        try:
+            meta["asar"] = {"tree_entries": sum(1 for _ in ar.iter_files())}
+            for rel, item in ar.iter_files():
+                if len(targets) >= 60000:
+                    meta["truncated"] = True
+                    meta["errors"].append("归档可扫文件数超过 60000，已截断")
+                    break
+                # 注意判定顺序：.map / .min.css 不在 _LANG_BY_EXT 里，
+                # 若先查 detect_lang 就会在 `lang == "other"` 处 continue，
+                # 永远到不了下面这个分支（评审实测：三个扩展名里只有 .min.js 能触发）。
+                artifact = rel.endswith((".map", ".min.js", ".min.css"))
+                lang = detect_lang(rel)
+                if lang in ("other",) and not artifact:
+                    meta["skipped_other"] += 1
+                    continue
+                meta["candidates"] += 1
+                if artifact:
+                    meta["skipped_ext"] += 1
+                    continue
+                if not include_vendor and any(v in _norm(rel) for v in M3_VENDOR_PARTS):
+                    meta["skipped_vendor"] += 1
+                    continue
+                try:
+                    size = int(item.get("size", 0) or 0)
+                except (TypeError, ValueError):
+                    meta["skipped_bad_entry"] += 1
+                    continue
+                if size > max_file_bytes:
+                    meta["skipped_large"] += 1
+                    continue
+                targets.append((rel, lang, ("asar", ar, rel, item)))
+        except AsarError as e:
+            meta["errors"].append("归档目录树异常，停止枚举：%s" % e)
+        except RecursionError:
+            meta["errors"].append("归档目录树嵌套过深，停止枚举")
+        except Exception as e:                      # noqa: BLE001
+            # 对不可信输入保留宽捕获。记录类型名，便于区分「恶意构造」与「自身 bug」。
+            meta["errors"].append("归档枚举异常（%s）：%s" % (type(e).__name__, e))
     elif os.path.isdir(path):
         stack = [path]
         truncated = False
@@ -1918,15 +2029,26 @@ def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024, acc=None,
                             continue
                         stack.append(e.path)
                     elif e.is_file(follow_symlinks=False):
+                        rel = os.path.relpath(e.path, path)
+                        # 用带前导 / 的规范形态去匹配，与 asar 分支（/node_modules/...）一致。
+                        # 【坑】原先用 _norm(rel)（形如 vendor/leak.js）匹配 M3_VENDOR_PARTS 里的
+                        # /vendor/ —— 永远匹配不上。也就是说「目录目标跳过第三方依赖」是**空转**，
+                        # 只有 asar 分支真正生效（评审实测：目录目标 skipped_vendor=0）。
+                        rel_norm = "/" + _norm(rel)
+                        # 判定顺序见 asar 分支的同名注释：.map / .min.css 不在
+                        # _LANG_BY_EXT 里，必须先判 artifact 再判 lang。
+                        artifact = e.name.endswith((".map", ".min.js", ".min.css"))
                         lang = detect_lang(e.path)
-                        if lang in ("other",):
+                        if lang in ("other",) and not artifact:
+                            # 不是「没有这个文件」，而是「有这个文件但按扩展名没看」。
+                            # 必须计数，否则候选数与实扫数对不上，读者会以为扫全了。
+                            meta["skipped_other"] += 1
                             continue
                         meta["candidates"] += 1
-                        if e.name.endswith((".map", ".min.js", ".min.css")):
+                        if artifact:
                             meta["skipped_ext"] += 1
                             continue
-                        rel = os.path.relpath(e.path, path)
-                        if not include_vendor and any(v in _norm(rel) for v in M3_VENDOR_PARTS):
+                        if not include_vendor and any(v in rel_norm for v in M3_VENDOR_PARTS):
                             meta["skipped_vendor"] += 1
                             continue
                         sz = e.stat(follow_symlinks=False).st_size
@@ -2008,12 +2130,17 @@ def audit_targets(tool, extra_paths=None, max_files=2500, include_vendor=False):
         # by_design：设计上就该跳过的（第三方依赖、压缩产物）——不算缺陷
         "skipped_vendor": sum(r.get("skipped_vendor", 0) for r in results),
         "skipped_ext": sum(r.get("skipped_ext", 0) for r in results),
+        # by_design（按扩展名不认识）：也算设计内，但要单独可见——
+        # 它正是「逻辑写在 .vue/.rb/无扩展名文件里」时的漏报通道
+        "skipped_other": sum(r.get("skipped_other", 0) for r in results),
         # gaps：可能真正漏掉东西的——必须让用户看见
         "skipped_large": sum(r.get("skipped_large", 0) for r in results),
+        "skipped_bad_entry": sum(r.get("skipped_bad_entry", 0) for r in results),
         "truncated": any(r.get("truncated") for r in results),
         "read_errors": sum(len(r.get("errors") or []) for r in results),
     }
     coverage["gaps"] = (coverage["skipped_large"]
+                        + coverage["skipped_bad_entry"]
                         + (1 if coverage["truncated"] else 0)
                         + coverage["read_errors"])
 
@@ -2052,6 +2179,9 @@ def json_static(st):
         return None
     return {
         "summary": st["summary"],
+        # coverage 必须进 JSON：只读 JSON 的下游（自动化审计就是这种）
+        # 若拿不到「截断了 / 有 N 个文件没读成」，就只能看到一个孤零零的结论。
+        "coverage": st.get("coverage"),
         "files_scanned": st["files_scanned"],
         "bytes_scanned": st["bytes_scanned"],
         "total_hits": st.get("total_hits", 0),
@@ -2206,6 +2336,19 @@ def render_text(results, meta):
     return "\n".join(L)
 
 
+def _md_safe(s, limit=160):
+    """把外部输入（归档内文件名、清单里的路径）转义成可安全放进 Markdown 的形式。
+
+    被审计方完全控制这些字符串。评审实测：一个名字里带换行 + `|` + 反引号的文件，
+    就能往审计报告里插入标题和表格行——报告是给人看的，被人往里写字是实打实的风险。
+    HTML 报告不受影响（每处插值都走了 html.escape，评审验证注入失败）。
+    """
+    s = str(s).replace("\r", " ").replace("\n", " ")
+    s = s.replace("`", "'").replace("|", "\\|")
+    s = s.replace("<", "&lt;").replace(">", "&gt;")
+    return s[:limit]
+
+
 def render_md(results, meta):
     L = []
     L.append("# AgentEgress 审计报告")
@@ -2276,7 +2419,8 @@ def render_md(results, meta):
                 L.append("| 大小 | 路径 |")
                 L.append("|---|---|")
                 for e in m["entries"][:20]:
-                    L.append("| %s | `%s` |" % (human(int(e["size"] or 0)), e["path"]))
+                    L.append("| %s | `%s` |" % (human(int(e["size"] or 0)),
+                                                _md_safe(e["path"])))
                 if len(m["entries"]) > 20:
                     L.append("| ... | 其余 %d 项 |" % (len(m["entries"]) - 20))
                 L.append("")
@@ -2332,7 +2476,7 @@ def render_md(results, meta):
                     L.append("")
                     for h in c["hits"][:15]:
                         L.append("- `%s:%d` · %s · %s 区 · w=%d"
-                                 % (h["file"], h["line"], h["note"],
+                                 % (_md_safe(h["file"]), h["line"], h["note"],
                                     h["region"], h["weight"]))
                         L.append("  ```")
                         L.append("  %s" % h["snippet"])
@@ -2862,7 +3006,7 @@ def main():
         snaps = [expand_snapshot(s, t) for s in rep["snapshot_states"]]
         level, reasons = judge(rep, snaps)
         results.append({"report": rep, "snapshots": snaps, "level": level,
-                        "reasons": reasons, "static": None})
+                        "reasons": reasons, "static": None, "tool": t})
 
     # ---------------- M3 客户端静态审计 ----------------
     if args.static or args.static_path:
@@ -2887,13 +3031,16 @@ def main():
                 })
         else:
             for entry in results:
-                t = entry["report"]
-                if not t.get("installed"):
-                    continue
-                if not any(os.path.exists(expand(p)) for p in t.get("audit_paths", [])):
+                # 【坑】这里不能再用 `report["installed"]` 当门槛 ——
+                # installed 取决于**数据目录**是否存在，而 M3 审的是**客户端程序**（asar）。
+                # 「用户清掉了数据目录但客户端还装着」是完全正常的场景，
+                # 那时 M3 照样该跑。判据只应该是 audit_paths 是否真的存在。
+                tool = entry.get("tool") or {}
+                found = [expand(p) for p in tool.get("audit_paths", [])]
+                if not any(os.path.exists(p) for p in found):
                     continue
                 try:
-                    entry["static"] = audit_targets(t, max_files=args.static_max_files,
+                    entry["static"] = audit_targets(tool, max_files=args.static_max_files,
                                                     include_vendor=args.include_vendor)
                 except Exception as e:
                     entry["reasons"].append("M3 静态审计异常：%s" % e)

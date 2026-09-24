@@ -269,6 +269,110 @@ def check_robustness():
                    "cases": [{"name": n, "ok": ok, "note": note} for n, ok, note in cases]})
 
 
+def check_cli(quick=False):
+    """走真实 CLI（main()）的验收。
+
+    【为什么必须有这一节】
+    评审 v2 发现 `--static` **从来没有执行过 M3**：main 里取错了数据源
+    （`t.get("audit_paths")` 里的 t 是 scan_tool 的返回，不含该字段，判断恒假）。
+    而当时 verify.py 的**全部**用例都是直接调库函数——没有一个走 main()，
+    所以这个缺陷一路活到 v0.2.2，退出码 0、报告里一行提示都没有。
+
+    **库函数正确 ≠ CLI 正确。** 这一节专门守这个缝。
+
+    做法：现场造一个小 asar + 一个只含该工具的临时指纹库，跑真实 CLI。
+    这样几秒钟就能验完，不必依赖真实客户端。
+    """
+    tmp = tempfile.mkdtemp(prefix="egress-cli-")
+    problems = []
+    try:
+        agent = os.path.join(ROOT, "agentegress.py")
+        py = sys.executable
+
+        # 造一个含能力特征的小 asar
+        tgt_dir = os.path.join(tmp, "fake")
+        os.makedirs(tgt_dir, exist_ok=True)
+        asar_path = os.path.join(tgt_dir, "app.asar")
+        body = (b"const a='upload-credential';"
+                b"createCipheriv('aes-256-gcm');"
+                b"fetch('/api/v1/snapshot/upload-credential');"
+                b"x-oss-signature")
+        tree = {"files": {"main.js": {"size": len(body), "offset": "0"}}}
+        js = json.dumps(tree).encode("utf-8")
+        pad = (-len(js)) % 4                      # Chromium pickle 的 4 字节对齐
+        header = (struct.pack("<I", 4) + struct.pack("<I", len(js) + pad + 8)
+                  + struct.pack("<I", len(js) + pad) + struct.pack("<I", len(js)))
+        with open(asar_path, "wb") as f:
+            f.write(header + js + b" " * pad + body)
+
+        fp_path = os.path.join(tmp, "fp.json")
+        with open(fp_path, "w", encoding="utf-8") as f:
+            json.dump({"tools": [{
+                "id": "clitest", "name": "CLI 测试目标", "vendor": "test",
+                "paths": [], "snapshot_hints": [],
+                "audit_paths": [asar_path.replace("\\", "/")],
+            }]}, f, ensure_ascii=False)
+
+        def run(*argv, timeout=300):
+            return subprocess.run([py, agent] + list(argv),
+                                  capture_output=True, text=True, timeout=timeout)
+
+        # C1 · --static 必须真的产出 M3 数据（而不是静默什么都不做）
+        out1 = os.path.join(tmp, "static.json")
+        r = run("--tool", "clitest", "--static", "--quiet",
+                "--fingerprints", fp_path, "-j", out1)
+        if r.returncode != 0:
+            problems.append("--static 退出码 %s：%s" % (r.returncode, (r.stderr or "")[-160:]))
+        elif not os.path.exists(out1):
+            problems.append("--static 没写出 JSON")
+        else:
+            with open(out1, encoding="utf-8") as f:
+                payload = json.load(f)
+            n_static = sum(1 for x in payload.get("results", []) if x.get("static"))
+            if n_static == 0:
+                problems.append("--static 产出的 static 全为空（M3 根本没执行）")
+            else:
+                # M3 跑通了，还要确认它真的看到了那份载荷
+                st = [x for x in payload["results"] if x.get("static")][0]["static"]
+                if not (st.get("summary") or {}).get("confirmed", 0) \
+                        and not (st.get("summary") or {}).get("likely", 0):
+                    problems.append("--static 跑了但没检出任何能力（载荷写入可能有问题）")
+
+        # C2 · 畸形 asar 不得让 CLI 崩掉（评审：5 类畸形会 exit=1）
+        for tag, blob in (("array", b"[]"),
+                          ("str", b'"x"')):
+            bad = os.path.join(tmp, "bad_%s.asar" % tag)
+            b = blob
+            h = (struct.pack("<I", 4) + struct.pack("<I", len(b) + 8)
+                 + struct.pack("<I", len(b)) + struct.pack("<I", len(b)))
+            with open(bad, "wb") as f:
+                f.write(h + b)
+            r = run("--static-path", bad, "--quiet", "-j", os.path.join(tmp, "bad.json"))
+            if r.returncode != 0:
+                problems.append("畸形 asar(%s) 让 CLI 崩了：exit=%s" % (tag, r.returncode))
+
+        # C3 · --static-path 指向不存在的路径不应崩
+        r = run("--static-path", os.path.join(tmp, "nope.asar"), "--quiet",
+                "-j", os.path.join(tmp, "nope.json"))
+        if r.returncode != 0:
+            problems.append("不存在的目标让 CLI 崩了：exit=%s" % r.returncode)
+
+        # C4 · 报告文件必须真的写出来
+        rpt = os.path.join(tmp, "r.html")
+        r = run("--tool", "clitest", "--static", "--quiet",
+                "--fingerprints", fp_path, "-H", rpt)
+        if not os.path.exists(rpt) or os.path.getsize(rpt) < 500:
+            problems.append("HTML 报告没写出或过小")
+    except Exception as e:                          # noqa: BLE001
+        problems.append("CLI 检查异常：%r" % e)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    return record("CLI 端到端", not problems,
+                  "4 项检查通过" if not problems else "；".join(problems[:3]),
+                  {"problems": problems})
+
+
 # ---------------------------------------------------------------- 5. 大样本（可选）
 
 def check_full():
@@ -337,6 +441,7 @@ def main():
     check_selfcheck()
     check_regression(quick=quick)
     check_robustness()
+    check_cli(quick=quick)
     if full:
         check_full()
 
