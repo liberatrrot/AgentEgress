@@ -51,6 +51,22 @@ VERSION = "0.2.2"
 
 SKIP_DIRS = {"node_modules", "__pycache__", ".venv", "venv", "site-packages", ".mypy_cache"}
 
+# M3 用的目录跳过规则——**故意不含 node_modules**。
+#
+# 【坑】M3 早期直接复用了上面的 SKIP_DIRS，而它是在**目录遍历阶段**生效的，
+# 于是 node_modules 里的文件根本没被枚举。后果是：
+#   · `--include-vendor` 对目录目标完全失效（文件都进不来，权重改得再好也没用）
+#   · 「把外传逻辑整个放进 node_modules」这条路检不出（变异测试 M6 实测确认）
+#
+# 而 node_modules 正是本工具最该防的隐身通道之一。
+# 现在把它交给「vendor 分层」策略处理（预筛 + 按判别力降权），
+# 而不是在遍历阶段就一刀切排除。
+#
+# 仍要跳过的是**明确的运行时环境**：里面不会有客户端自研代码，
+# 且体积巨大、内容无判别力。
+M3_SKIP_DIRS = {"__pycache__", ".venv", "venv", "site-packages", ".mypy_cache",
+                ".git", ".hg", ".svn"}
+
 # 上传语义关键词：真正的快照 / 上传状态文件必然命中其一。
 # 只带 workspacePath 的普通记录文件不算——那是 Git / 编辑器都会写的字段。
 UPLOAD_SEMANTIC_KEYS = (
@@ -656,7 +672,21 @@ TK_LINE_COMMENT = "line_comment"
 TK_BLOCK_COMMENT = "block_comment"
 TK_STRING = "string"
 
-# 各区域的证据可信度系数（这是判定精度的核心参数）
+VENDOR_STRONG_W = 8           # 「强语义证据」的权重门槛
+# 强语义证据在 vendor 区的系数。
+#
+# 为什么给到 0.8（而不是 0.10 或 0.55）：
+# 变异测试（tests/verify.py 的 check_mutation_corpus）显示，
+# 0.55 时「把外传逻辑整个放进 node_modules」这一级**检不出**——
+# 那正是「恶意逻辑 vendor 进去」的隐身通道，也是本工具最该防的场景。
+#
+# 而这些模式（upload-credential / snapshot/upload / x-oss-signature /
+# .ssh/ / .git/objects）在**正常第三方库里几乎不出现**——它们出现本身就是异常信号。
+# 位置（是不是 node_modules）不应该改变这件事。
+# 通用 API（fetch / createCipheriv）才需要靠位置降权。
+VENDOR_STRONG_FACTOR = 0.8
+
+# 各区域的证据权重（**相对权重，不是概率**——见 ARCHITECTURE「证据权重，不是概率」）
 REGION_FACTOR = {
     TK_CODE: 1.00,           # 真在跑的逻辑
     TK_STRING: 0.85,         # 会被实际使用的字面量（URL 路径、字段名）
@@ -1708,6 +1738,20 @@ def scan_text_for_capabilities(rel_path, text, lang, bundled=False):
 
     for cap in _COMPILED_CAPS:
         for pat in cap["patterns"]:
+            # vendor 降权**分档**（见 VENDOR_STRONG_W 的定义）。
+            #
+            # 为什么不能一刀切乘 0.10：外部评审指出「vendor 只是来源属性，
+            # 不等于证据本身更假」。一刀切的后果是 upload-credential（权重 9）
+            # 在 node_modules 里变成 0.9 分 —— 等于给「把恶意逻辑 vendor 进去」
+            # 开了一条隐身通道，而本工具的核心担忧恰恰是「客户端藏了能力」。
+            #
+            # 分档依据是**判别力**而不是位置：
+            #   · 通用 API（fetch / createCipheriv）在任何 HTTP 客户端和加密库里都有 → 0.10
+            #   · 强语义证据（upload-credential / snapshot/upload）误报率极低，
+            #     值得跨依赖边界追踪 → 0.55
+            fw_eff = fw
+            if fclass == "vendor" and pat["w"] >= VENDOR_STRONG_W:
+                fw_eff = VENDOR_STRONG_FACTOR
             matches = []
             for m in pat["re"].finditer(text):
                 kind = region_at(segs, m.start())
@@ -1735,7 +1779,7 @@ def scan_text_for_capabilities(rel_path, text, lang, bundled=False):
                     "line": line_no_at(starts, pos),
                     "snippet": snippet_at(text, pos),
                     "ctx": context_window(text, starts, pos, 3),
-                    "base_score": pat["w"] * rf * fw,
+                    "base_score": pat["w"] * rf * fw_eff,
                 })
     return raw
 
@@ -1910,57 +1954,68 @@ def _downgrade(verdict):
     return _VERDICT_ORDER[min(i + 1, len(_VERDICT_ORDER) - 1)]
 
 
-# ---------------- 组合链：从「能力列表」到「数据流链」 ----------------
+# ---------------- 组合证据：共现检测，**不是**数据流分析 ----------------
 #
-# 外部评审的核心建议：真正危险的不是「代码里出现过哪些危险关键词」，
-# 而是「有没有一条合理的路径，能把用户的工作区送出去」。
-# telemetry 和 workspace_snapshot 并列展示会误导——它们不是同一维度：
-#   数据范围（telemetry / 元数据 / 源码 / 整个工作区）
-#   × 变换（打包 / 压缩 / 加密）
-#   × 外传通道（HTTPS / OSS / S3 / DNS）
-#   × 触发方式（启动 / 定时 / 用户事件 / 未知）
+# 【必须说清楚的概念边界】
+# 外部评审指出，本文件早期版本把这里叫「数据流链（data flow chain）」是**概念偷换**：
 #
-# 所以除了逐条列能力，还要回答：**这些能力凑起来构成哪条链路？**
+#     A 的证据存在 + B 的证据存在 + C 的证据存在
+#         ≠
+#     A → B → C 是同一条程序路径
+#
+# 反例：workspace.js 里读工作区、security.js 里加密、update.js 里上传安装包——
+# 三者可能毫无数据依赖，但共现检测会把它们拼成"工作区 → 加密 → 上传"。
+#
+# 所以这个函数的产出**只能称为「组合证据（capability composition）」**：
+# 它回答「构成某个故事所需的几类证据是否同时存在」，
+# 而**不回答**「它们是否在同一条可达路径上」。
+#
+# 后者需要真正的 source → sink 分析（符号解析 + 调用图），属于 v0.3。
+#
+# 为了让读者能自己判断可信程度，每条组合都带一个 `cohesion` 字段：
+#   same_file    至少两个环节的证据出现在同一文件（关联较强，值得优先人工核对）
+#   co_occur     仅同时存在，无任何路径证据（最弱，可能来自互不相关的代码）
 COMBINED_CHAINS = [
     {
         "id": "workspace_to_object_storage",
-        "name": "工作区 → 加密归档 → 对象存储直传",
+        "name": "工作区采集 + 加密 + 对象存储直传",
         "requires": ["workspace_snapshot", "envelope_encryption", "object_storage_upload"],
         "level": "blocking",
-        "desc": "这条链路能把整个工作区（含 .git 历史）打包加密后直接投递到对象存储，"
-                "不经过自建服务端——正是 ZCode 事件的形态",
+        "desc": "这三类证据同时存在时，具备「把工作区打包加密后投递到对象存储」"
+                "所需的全部要素——ZCode 事件就是这个形态。"
+                "注意：本项只证明要素齐备，不证明它们构成同一条程序路径",
     },
     {
         "id": "workspace_to_credential_api",
-        "name": "工作区 → 申请上传凭证 → 远端",
+        "name": "工作区采集 + 上传凭证申请",
         "requires": ["workspace_snapshot", "upload_credential_api"],
         "level": "blocking",
-        "desc": "存在「采集工作区 → 申请上传凭证 → 投递」的完整调用链",
+        "desc": "具备「采集工作区」与「申请上传凭证」两类要素",
     },
     {
         "id": "archive_then_upload",
-        "name": "批量打包 → 外传",
+        "name": "批量打包 + 外传通道",
         "requires": ["bulk_archive", "object_storage_upload"],
         "level": "serious",
-        "desc": "存在「批量收集文件 → 打包 → 外传」的路径",
+        "desc": "具备「批量收集文件」与「外传通道」两类要素",
     },
     {
         "id": "git_history_exfil",
-        "name": "Git 历史 → 外传",
+        "name": "Git 历史读取 + 外传通道",
         "requires": ["git_history_access", "object_storage_upload"],
         "level": "serious",
-        "desc": "能读到 .git 内部对象并具备外传通道——历史中可能残留已删除的密钥",
+        "desc": "能读到 .git 内部对象且具备外传通道——历史中可能残留已删除的密钥",
     },
     {
         "id": "credential_harvest",
-        "name": "凭据采集 → 外传",
+        "name": "凭据文件读取 + 外传通道",
         "requires": ["credential_access", "object_storage_upload"],
         "level": "blocking",
-        "desc": "存在「读取本机凭据文件（.ssh/.aws/.npmrc 等）→ 外传」的路径",
+        "desc": "具备「读取本机凭据文件（.ssh/.aws/.npmrc 等）」与「外传通道」两类要素",
     },
     {
         "id": "config_exfil",
-        "name": "跨工作区配置 → 外传",
+        "name": "跨工作区配置采集 + 外传通道",
         "requires": ["global_config_collection", "object_storage_upload"],
         "level": "serious",
         "desc": "采集范围超出单个工作区，且具备外传通道",
@@ -1968,12 +2023,38 @@ COMBINED_CHAINS = [
 ]
 
 
-def detect_chains(caps):
-    """从能力画像里识别「组合链」。
+def _cohesion(need, acc):
+    """判断组合证据的关联程度——这是「共现」与「路径」之间的唯一可用桥梁。
 
-    一条链成立的条件：它要求的每个能力都达到 likely 以上。
-    这比单看某一项更有判断价值——`object_storage_upload` 本身可能只是
-    「支持导出到用户自己的云盘」，但叠加 `workspace_snapshot` 与自动触发就完全是另一回事。
+    判据很朴素：**至少两个环节的证据出现在同一文件**。
+    同文件共现远强于跨文件共现——它至少说明这段代码里同时出现了这两件事，
+    值得优先人工核对。但它**仍不等于**数据流关系（同一文件里的两段无关代码也会命中）。
+
+    返回 (等级, 共有文件列表)。
+    """
+    if acc is None:
+        return "unknown", []
+    files_by_cap = {}
+    for (cid, _pid), b in acc.buckets.items():
+        files_by_cap.setdefault(cid, set()).update(b["files"])
+    sets = [files_by_cap.get(n, set()) for n in need]
+    sets = [s for s in sets if s]
+    for i in range(len(sets)):
+        for j in range(i + 1, len(sets)):
+            inter = sets[i] & sets[j]
+            if inter:
+                return "same_file", sorted(inter)[:5]
+    return "co_occur", []
+
+
+def detect_chains(caps, acc=None):
+    """从能力画像里识别「组合证据」。
+
+    **这不是数据流分析。** 见文件顶部 COMBINED_CHAINS 的注释——
+    它只回答「构成某个故事所需的几类证据是否同时存在」，
+    不回答「它们是否在同一条可达路径上」。
+
+    成立条件：组合要求的每个能力都达到 likely 以上。
     """
     lv = {c["id"]: c["level"] for c in caps}
     ok = ("confirmed", "likely")
@@ -1984,21 +2065,33 @@ def detect_chains(caps):
         if missing:
             continue
         hit = [c for c in caps if c["id"] in need]
+        cohesion, same_files = _cohesion(need, acc)
         out.append({
             "id": chain["id"],
             "name": chain["name"],
             "level": chain["level"],
             "desc": chain["desc"],
+            # 类型：明确标注这是「证据共现」而非「数据流」
+            "kind": "capability_composition",
+            "kind_label": "组合证据（共现检测，非路径分析）",
+            "cohesion": cohesion,
+            "cohesion_label": {
+                "same_file": "较强：至少两个环节的证据出现在同一文件，建议优先人工核对",
+                "co_occur": "弱：仅同时存在，无任何路径证据——可能来自互不相关的代码",
+                "unknown": "未评估",
+            }.get(cohesion, "未评估"),
+            "same_files": same_files,
             "evidence": [{"cap": c["id"], "name": c["name"], "level": c["level"],
                           "patterns": c["pattern_count"], "files": c["file_count"],
                           "hits": c.get("hit_total", 0)} for c in hit],
-            # 触发方式：链上若有任一能力被判为「自动」，则整条链的性质就变了
             "auto_trigger": any(
                 (c.get("trigger_hint") or {}).get("verdict") == "automatic" for c in hit),
             "evidence_count": sum(c.get("hit_total", 0) for c in hit),
         })
     order = {"blocking": 0, "serious": 1}
-    out.sort(key=lambda x: (order.get(x["level"], 9), -x["evidence_count"]))
+    out.sort(key=lambda x: (order.get(x["level"], 9),
+                            0 if x["cohesion"] == "same_file" else 1,
+                            -x["evidence_count"]))
     return out
 
 
@@ -2169,7 +2262,7 @@ def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024, acc=None,
                     break
                 try:
                     if e.is_dir(follow_symlinks=False):
-                        if e.name in SKIP_DIRS:
+                        if e.name in M3_SKIP_DIRS:
                             continue
                         stack.append(e.path)
                     elif e.is_file(follow_symlinks=False):
@@ -2293,7 +2386,7 @@ def audit_targets(tool, extra_paths=None, max_files=2500, include_vendor=False):
     return {
         "targets": results,
         "capabilities": caps,
-        "chains": detect_chains(caps),
+        "chains": detect_chains(caps, acc=acc),
         "summary": summary,
         "coverage": coverage,
         "total_hits": acc.total_hits,
@@ -2463,20 +2556,25 @@ def render_text(results, meta):
                 else:
                     L.append("    因技术原因未覆盖: 0 项")
 
-            # 组合链：从「能力列表」升级到「数据流链」——
-            # 回答用户真正关心的问题：「有没有一条合理的路径能把我的工作区送出去？」
+            # 组合证据：**不是**数据流链。措辞必须让读者看出这个区别——
+            # 共现检测能回答「构成某个故事的证据是否齐备」，
+            # 但不能回答「它们是否在同一条可达路径上」。
             chains = st.get("chains") or []
             if chains:
-                L.append("    [组合链] 以下能力凑成了可追踪的数据流路径：")
+                L.append("    [组合证据] 构成某些故事所需的几类证据同时存在：")
+                L.append("      ※ 本项是「证据共现」检测，不是程序路径/数据流分析。")
+                L.append("        共现 ≠ 在同一条可达路径上，请结合「关联度」自行判断。")
                 for ch in chains[:5]:
                     mark = "[阻断级]" if ch["level"] == "blocking" else "[严重]  "
                     L.append("      %s %s" % (mark, ch["name"]))
-                    L.append("         %s" % ch["desc"])
+                    L.append("         关联度: %s" % ch.get("cohesion_label", ""))
+                    if ch.get("same_files"):
+                        L.append("         共有文件: %s" % "、".join(ch["same_files"]))
                     L.append("         证据: %s" % " + ".join(
                         "%s(%s/%d处)" % (e["name"], e["level"], e["hits"])
                         for e in ch["evidence"]))
                     if ch["auto_trigger"]:
-                        L.append("         触发: 链上存在「自动触发」的能力（性质不同于用户主动）")
+                        L.append("         触发: 组合中存在「自动触发」的能力（性质不同于用户主动）")
             tmap = {"automatic": "自动", "user_initiated": "用户主动",
                     "mixed": "混合", "unknown": "未判定"}
             for c in st["capabilities"]:
@@ -3053,27 +3151,35 @@ def render_html(results, meta):
                     P.append('<br>因技术原因未覆盖：0 项')
                 P.append('</div>')
 
-            # 组合链：报告的核心价值在这里——不是「出现过哪些危险关键词」，
-            # 而是「有没有一条合理的路径能把工作区送出去」。
+            # 组合证据：**不是**数据流链。措辞必须让读者看出这个区别。
             chains = st.get("chains") or []
             if chains:
-                P.append('<div class="sec"><h3>组合链（数据流路径）</h3>')
-                P.append('<div class="sub small" style="margin-bottom:8px">'
-                         '单项能力可能各自无害（比如「支持导出到用户自己的云盘」），'
-                         '但凑成链路后性质就变了。以下链路要求每个环节都达到 likely 以上。</div>')
+                P.append('<div class="sec"><h3>组合证据（共现检测）</h3>')
+                P.append('<div class="warnbox small" style="margin-bottom:10px">'
+                         '<b>本项不是数据流分析。</b>它只检查「构成某个故事所需的几类证据是否同时存在」，'
+                         '<b>不检查</b>它们是否落在同一条可达路径上。'
+                         '三个互不相关的模块各有一个能力，也会被组合出来。'
+                         '请结合每条组合的「关联度」自行判断——'
+                         '要确认它们真的连成一条链，需要人工核对或动态验证。</div>')
                 for ch in chains:
                     blocking = ch["level"] == "blocking"
+                    coh_class = "crit" if ch.get("cohesion") == "same_file" else ""
                     P.append('<div class="why %s" style="margin-bottom:8px">'
-                             % ("crit" if blocking else "med"))
+                             % ("crit" if blocking else ("med" if not coh_class else coh_class)))
                     P.append('<b>%s</b> %s<br>'
                              % ("[阻断级]" if blocking else "[严重]", esc(ch["name"])))
                     P.append('<span class="sub small">%s</span><br>' % esc(ch["desc"]))
-                    P.append('<span class="small mono">证据链：%s</span>'
-                             % esc(" → ".join(
+                    P.append('<span class="small"><b>关联度：</b>%s</span>'
+                             % esc(ch.get("cohesion_label", "")))
+                    if ch.get("same_files"):
+                        P.append('<br><span class="small mono">共有文件：%s</span>'
+                                 % esc("、".join(ch["same_files"])))
+                    P.append('<br><span class="small mono">证据：%s</span>'
+                             % esc(" ＋ ".join(
                                  "%s(%s, %d处命中)" % (e["name"], e["level"], e["hits"])
                                  for e in ch["evidence"])))
                     if ch["auto_trigger"]:
-                        P.append('<br><span class="small"><b>触发方式：链上存在「自动触发」'
+                        P.append('<br><span class="small"><b>触发方式：组合中存在「自动触发」'
                                  '的能力</b>——其性质与「用户主动」完全不同</span>')
                     P.append('</div>')
                 P.append('</div>')

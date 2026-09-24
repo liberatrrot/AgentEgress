@@ -1,13 +1,13 @@
 {
-  "time": "2026-09-24 21:35:34",
+  "time": "2026-09-24 22:14:30",
   "ok": true,
   "results": [
     {
       "name": "语法编译",
       "ok": true,
-      "detail": "3297 行",
+      "detail": "3403 行",
       "extra": {
-        "lines": 3297
+        "lines": 3403
       }
     },
     {
@@ -20,6 +20,15 @@
         "unverifiable": [
           "log_all"
         ]
+      }
+    },
+    {
+      "name": "预筛等价性",
+      "ok": true,
+      "detail": "694 个边界样本，新旧实现结论一致",
+      "extra": {
+        "samples": 694,
+        "mismatches": []
       }
     },
     {
@@ -100,6 +109,164 @@
           "crash_report: 链0 高危confirmed0",
           "oss_export: 链0 高危confirmed0",
           "local_crypto: 链0 高危confirmed0"
+        ]
+      }
+    },
+    {
+      "name": "变异测试",
+      "ok": true,
+      "detail": "基线 5 项可见 → M0:5 / M1:4 / M2:4 / M3:4 / M4:0 / M5:0 / M6:3 / M7:4 / M8:2",
+      "extra": {
+        "rows": [
+          {
+            "variant": "M0-直接调用",
+            "detected": [
+              "envelope_encryption"
+            ],
+            "seen": [
+              "envelope_encryption",
+              "workspace_snapshot",
+              "upload_credential_api",
+              "object_storage_upload",
+              "git_history_access"
+            ],
+            "count": 1,
+            "seen_count": 5,
+            "levels": {
+              "envelope_encryption": "likely",
+              "workspace_snapshot": "possible",
+              "upload_credential_api": "possible",
+              "object_storage_upload": "possible",
+              "git_history_access": "possible"
+            }
+          },
+          {
+            "variant": "M1-包一层函数",
+            "detected": [
+              "envelope_encryption"
+            ],
+            "seen": [
+              "envelope_encryption",
+              "workspace_snapshot",
+              "upload_credential_api",
+              "object_storage_upload"
+            ],
+            "count": 1,
+            "seen_count": 4,
+            "levels": {
+              "envelope_encryption": "likely",
+              "workspace_snapshot": "possible",
+              "upload_credential_api": "possible",
+              "object_storage_upload": "possible"
+            }
+          },
+          {
+            "variant": "M2-拆到另一模块",
+            "detected": [
+              "envelope_encryption"
+            ],
+            "seen": [
+              "envelope_encryption",
+              "workspace_snapshot",
+              "upload_credential_api",
+              "object_storage_upload"
+            ],
+            "count": 1,
+            "seen_count": 4,
+            "levels": {
+              "envelope_encryption": "likely",
+              "workspace_snapshot": "possible",
+              "upload_credential_api": "possible",
+              "object_storage_upload": "possible"
+            }
+          },
+          {
+            "variant": "M3-改标识符名",
+            "detected": [
+              "envelope_encryption"
+            ],
+            "seen": [
+              "envelope_encryption",
+              "workspace_snapshot",
+              "upload_credential_api",
+              "object_storage_upload"
+            ],
+            "count": 1,
+            "seen_count": 4,
+            "levels": {
+              "envelope_encryption": "likely",
+              "workspace_snapshot": "possible",
+              "upload_credential_api": "possible",
+              "object_storage_upload": "possible"
+            }
+          },
+          {
+            "variant": "M4-字符串拼接",
+            "detected": [],
+            "seen": [],
+            "count": 0,
+            "seen_count": 0,
+            "levels": {}
+          },
+          {
+            "variant": "M5-base64",
+            "detected": [],
+            "seen": [],
+            "count": 0,
+            "seen_count": 0,
+            "levels": {}
+          },
+          {
+            "variant": "M6-放进-vendor",
+            "detected": [],
+            "seen": [
+              "envelope_encryption",
+              "workspace_snapshot",
+              "upload_credential_api"
+            ],
+            "count": 0,
+            "seen_count": 3,
+            "levels": {
+              "envelope_encryption": "possible",
+              "workspace_snapshot": "possible",
+              "upload_credential_api": "possible",
+              "object_storage_upload": "absent"
+            }
+          },
+          {
+            "variant": "M7-压成单行",
+            "detected": [
+              "envelope_encryption"
+            ],
+            "seen": [
+              "envelope_encryption",
+              "workspace_snapshot",
+              "upload_credential_api",
+              "object_storage_upload"
+            ],
+            "count": 1,
+            "seen_count": 4,
+            "levels": {
+              "envelope_encryption": "likely",
+              "workspace_snapshot": "possible",
+              "upload_credential_api": "possible",
+              "object_storage_upload": "possible"
+            }
+          },
+          {
+            "variant": "M8-动态构造",
+            "detected": [],
+            "seen": [
+              "upload_credential_api",
+              "envelope_encryption"
+            ],
+            "count": 0,
+            "seen_count": 2,
+            "levels": {
+              "upload_credential_api": "possible",
+              "envelope_encryption": "possible"
+            }
+          }
         ]
       }
     },

@@ -18,6 +18,7 @@ AgentEgress 一键验收 —— 一条命令跑完所有检查，只看最后结
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -461,6 +462,172 @@ def check_near_negative():
                   {"problems": problems, "details": details})
 
 
+def check_prefilter_equivalence():
+    """预筛等价性回归。
+
+    【为什么需要】外部评审指出：把预筛从 alternation 正则换成逐关键词 `in` 之后，
+    两者的 **false-negative set 不一定相同**——大小写、Unicode 折叠、边界都可能差。
+    而预筛漏掉一个文件，就是一次永久漏报。换实现必须证明语义等价。
+
+    做法：用**同一张关键词表**重建 regex 参照实现（旧实现），
+    在大量边界样本上对比两者结论，任何不一致都报出来。
+    """
+    import agentegress as ae
+
+    kws = sorted({k.lower() for ks in ae.PATTERN_KEYWORDS.values() for k in ks})
+    ref = re.compile("|".join(re.escape(k) for k in sorted(kws, key=len, reverse=True)), re.I)
+
+    samples = []
+    # 1) 每个关键词 × 四种大小写形态
+    for k in kws:
+        samples.append((k, "原样"))
+        samples.append((k.upper(), "全大写"))
+        samples.append((k.capitalize(), "首字母大写"))
+        samples.append(("x" * 50 + k + "y" * 50, "嵌入上下文"))
+    # 2) 边界与异常输入
+    samples += [
+        ("", "空串"),
+        ("a" * 5000, "长 ASCII"),
+        ("中文测试内容没有任何关键词", "纯中文"),
+        ("\x00\x01\x02", "控制字符"),
+        ("snapshot/upload", "路径形态"),
+        ("SNAPSHOT/UPLOAD", "路径形态-大写"),
+        ("upload\u2011credential", "Unicode 连字符（非 ASCII 短横）"),
+        ("CreateCipherIv", "驼峰混排"),
+        ("policy", "廉价词单现"),
+        ("\\.ssh/", "转义字符"),
+        ("x-oss-signature", "含短横的强特征"),
+    ]
+    # 3) Unicode 大小写折叠的已知陷阱
+    samples += [("İSTANBUL", "土耳其语 İ（lower 与 re.I 可能不一致）"),
+                ("ſnapshot", "长 s（ſ）"),
+                ("KELVIN\u212a", "开尔文符号")]
+
+    mismatches = []
+    for text, note in samples:
+        try:
+            a = ref.search(text) is not None
+        except Exception as e:                  # noqa: BLE001
+            mismatches.append("%s: 参照实现异常 %r" % (note, e))
+            continue
+        b = ae._prefilter_hit(text)
+        if a != b:
+            mismatches.append("%s：regex=%s / in=%s（样本 %r）"
+                              % (note, a, b, text[:40]))
+
+    return record("预筛等价性", not mismatches,
+                  "%d 个边界样本，新旧实现结论一致" % len(samples)
+                  if not mismatches else "；".join(mismatches[:3]),
+                  {"samples": len(samples), "mismatches": mismatches})
+
+
+def check_mutation_corpus():
+    """变异测试：找出扫描器的「检出边界」在哪一级失效。
+
+    【为什么这个可以提前做】外部评审否掉了「需要能生成可运行客户端」的延期理由——
+    我们测的是**静态扫描器**，所以 fixture 不需要真的能跑，
+    只要在文本层面逐级加大混淆就够了。
+
+    变异梯度（模拟对抗方逐步加大伪装）：
+        M0 直接调用          —— 基线，必须检出
+        M1 包一层函数
+        M2 拆到另一个模块
+        M3 改标识符名
+        M4 字符串拼接
+        M5 base64 编码
+        M6 放进 node_modules
+        M7 压成单行
+        M8 动态构造（new Function / 运行期拼装）
+
+    这张表本身就是**检出边界的说明**：读者能看到工具在哪一级开始失效，
+    而不是只看一个「已确认 7 项」的数字。失效的级别不是 bug，
+    是必须如实公开的能力边界。
+    """
+    import agentegress as ae
+
+    PAYLOAD_VARIANTS = [
+        ("M0-直接调用",
+         "const c=require('crypto');const cp=c.createCipheriv('aes-256-gcm',k,iv);\n"
+         "fetch('/api/v1/snapshot/upload-credential',{method:'POST'});\n"
+         "form.append('x-oss-signature',cred.oss.x_oss_signature);\n"
+         "archive.append('.git/objects',gitData);\n"),
+        ("M1-包一层函数",
+         "function doUpload(d){const c=require('crypto');const cp=c.createCipheriv('aes-256-gcm',k,iv);\n"
+         "return fetch('/api/v1/snapshot/upload-credential',{method:'POST',body:d});}\n"
+         "form.append('x-oss-signature',cred.oss.x_oss_signature);\n"),
+        ("M2-拆到另一模块",
+         "// uploader.js\nmodule.exports=function(d){return fetch('/api/v1/snapshot/upload-credential');};\n"
+         "// crypto.js\nconst cp=require('crypto').createCipheriv('aes-256-gcm',k,iv);\n"
+         "// oss.js\nform.append('x-oss-signature',cred.oss.x_oss_signature);\n"),
+        ("M3-改标识符名",
+         "const _0x1a=require('crypto');const _0x2b=_0x1a.createCipheriv('aes-256-gcm',_0x3c,_0x4d);\n"
+         "const _0x5e=_0x6f('/api/v1/snapshot/upload-credential');\n"
+         "const _0x7a='x-oss-signature';\n"),
+        ("M4-字符串拼接",
+         "const p='/api/v1/'+'snapshot'+'/'+'upload'+'-credential';\n"
+         "const alg='aes'+'-256'+'-gcm';\n"
+         "const sig='x-oss'+'-signature';\n"),
+        ("M5-base64",
+         "const p=atob('L2FwaS92MS9zbmFwc2hvdC91cGxvYWQtY3JlZGVudGlhbA==');\n"
+         "const alg=atob('YWVzLTI1Ni1nY20=');\n"),
+        ("M6-放进-vendor",
+         "// node_modules/some-pkg/dist/index.js\n"
+         "fetch('/api/v1/snapshot/upload-credential');\n"
+         "require('crypto').createCipheriv('aes-256-gcm',k,iv);\n"
+         "form.append('x-oss-signature',cred.oss.x_oss_signature);\n"),
+        ("M7-压成单行",
+         "const c=require('crypto');const cp=c.createCipheriv('aes-256-gcm',k,iv);"
+         "fetch('/api/v1/snapshot/upload-credential',{method:'POST'});"
+         "form.append('x-oss-signature',cred.oss.x_oss_signature);"),
+        ("M8-动态构造",
+         "const n=['create','Cipher','iv'].join('');const c=require('crypto');"
+         "const cp=c[n]('aes-256-gcm',k,iv);"
+         "const u=['/api/v1/','snapshot/','upload-credential'].join('');"
+         "new Function('u','return fetch(u)')(u);"),
+    ]
+
+    tmp = tempfile.mkdtemp(prefix="egress-mut-")
+    rows = []
+    try:
+        for name, code in PAYLOAD_VARIANTS:
+            d = os.path.join(tmp, name)
+            vendor = name.startswith("M6")
+            if vendor:
+                d = os.path.join(d, "node_modules", "some-pkg", "dist")
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "index.js"), "w", encoding="utf-8") as f:
+                f.write(code)
+
+            acc = ae.CapabilityAccumulator()
+            # M6 用 include_vendor=True，否则 vendor 区会被跳过——
+            # 那测不出「藏在依赖里」这一级的真实表现
+            ae.audit_path(os.path.join(tmp, name), acc=acc,
+                          include_vendor=vendor)
+            caps = ae.aggregate_from_buckets(acc)
+            lv = {c["id"]: c["level"] for c in caps}
+            detected = [k for k, v in lv.items() if v in ("confirmed", "likely")]
+            # 同时记录「达到 possible 及以上」的集合。
+            # 只看 likely 会低估检出能力：单文件 payload 的证据量本来就少，
+            # 归一化后很难上 likely，但那不等于「没看见」。
+            seen = [k for k, v in lv.items() if v != "absent"]
+            rows.append({
+                "variant": name,
+                "detected": detected,
+                "seen": seen,
+                "count": len(detected),
+                "seen_count": len(seen),
+                "levels": lv,
+            })
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    baseline = rows[0]["seen_count"] if rows else 0
+    detail = "基线 %d 项可见 → %s" % (baseline, " / ".join(
+        "%s:%d" % (r["variant"].split("-")[0], r["seen_count"]) for r in rows))
+    return record("变异测试", bool(baseline),
+                  detail, {"rows": rows})
+
+
 # ---------------------------------------------------------------- 5. 大样本（可选）
 
 def check_full():
@@ -527,9 +694,11 @@ def main():
 
     check_syntax()
     check_selfcheck()
+    check_prefilter_equivalence()
     check_regression(quick=quick)
     check_robustness()
     check_near_negative()
+    check_mutation_corpus()
     check_cli(quick=quick)
     if full:
         check_full()

@@ -263,7 +263,26 @@ def score_report(report):
     got = sum(r[1] for r in scored)
     possible = sum(r[2] for r in scored)
     total = round(100 * got / possible, 1) if possible else 0
-    return rows, got, possible, total
+
+    # ---- 第二条轴：证据成熟度 ----
+    #
+    # 外部评审指出的问题：把「工程完成度」和「这个工具的可信度」压成一个数字，
+    # 会让读者把 89/100 读成「安全工具可靠度 89%」。
+    # 拆成两条轴之后，工程进展仍可比较，而可信度单独呈现——
+    # 两者本来就不该混在一起。
+    n = agg.get("tp", 0) + agg.get("fn", 0) + agg.get("fp", 0) + agg.get("tn", 0)
+    n_neg = agg.get("fp", 0) + agg.get("tn", 0)
+    if n < 30:
+        maturity = "Low"
+    elif n < 100:
+        maturity = "Medium"
+    else:
+        maturity = "High"
+    # 负样本太少时再压一档：没有足够的负样本，「不误报」这个结论无从谈起
+    if n_neg < 10 and maturity != "Low":
+        maturity = "Medium" if maturity == "High" else maturity
+
+    return rows, got, possible, total, maturity, n
 
 
 def main():
@@ -280,7 +299,7 @@ def main():
     for path in files:
         with open(path, "r", encoding="utf-8") as f:
             report = json.load(f)
-        rows, got, possible, total = score_report(report)
+        rows, got, possible, total, maturity, n = score_report(report)
         agg = report["aggregate"]
         print()
         print("### %s   (版本 %s, %s)"
@@ -297,8 +316,15 @@ def main():
             print("    %-10s %8s %8d   %s" % (name, shown, mx, why))
         print("    " + "-" * 76)
         print("    %-10s %8.1f %8d" % ("合计", got, possible))
-        print("    折算百分制: %.1f / 100" % total)
-        summary.append((report.get("tag") or os.path.basename(path), total, agg))
+        print()
+        print("    ┌─ 两条轴，不要互相解释 ─────────────────────────────────────┐")
+        print("    │ Engineering score : %5.1f / 100  （工程完成度）             │" % total)
+        print("    │ Evidence maturity : %-6s        （证据成熟度，由样本量决定）│" % maturity)
+        print("    └───────────────────────────────────────────────────────────┘")
+        if maturity == "Low":
+            print("      ※ 样本量 %d < 30：上面那个百分数**不可外推**，" % n)
+            print("        它只说明这批用例被正确处理了，不说明真实世界性能。")
+        summary.append((report.get("tag") or os.path.basename(path), total, agg, maturity))
 
     if len(summary) >= 2:
         print()
@@ -306,11 +332,11 @@ def main():
         print("阶段对比")
         print("=" * 84)
         base = summary[0]
-        for tag, total, agg in summary:
+        for tag, total, agg, mat in summary:
             delta = total - base[1]
             mark = "" if tag == base[0] else ("  (%+.1f)" % delta)
-            print("  %-24s %5.1f / 100   %.2f MB/s%s"
-                  % (tag, total, agg["mb_per_sec"], mark))
+            print("  %-24s Eng %5.1f/100   Maturity %-6s  %5.2f MB/s%s"
+                  % (tag, total, mat, agg["mb_per_sec"], mark))
 
     cm = code_metrics()
     print()
