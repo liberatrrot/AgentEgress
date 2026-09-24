@@ -1,13 +1,13 @@
 {
-  "time": "2026-09-24 22:14:30",
+  "time": "2026-09-24 22:50:30",
   "ok": true,
   "results": [
     {
       "name": "语法编译",
       "ok": true,
-      "detail": "3403 行",
+      "detail": "3475 行",
       "extra": {
-        "lines": 3403
+        "lines": 3475
       }
     },
     {
@@ -115,7 +115,7 @@
     {
       "name": "变异测试",
       "ok": true,
-      "detail": "基线 5 项可见 → M0:5 / M1:4 / M2:4 / M3:4 / M4:0 / M5:0 / M6:3 / M7:4 / M8:2",
+      "detail": "基线 5 项可见 → M0:5 / M1:4 / M2:4 / M3:4 / M4:0 / M5:0 / M6:3 / M7:4 / M8:2；已知失效：M4、M5",
       "extra": {
         "rows": [
           {
@@ -267,7 +267,12 @@
               "envelope_encryption": "possible"
             }
           }
-        ]
+        ],
+        "blind": [
+          "M4-字符串拼接",
+          "M5-base64"
+        ],
+        "degraded": []
       }
     },
     {

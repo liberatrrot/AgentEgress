@@ -673,7 +673,6 @@ TK_BLOCK_COMMENT = "block_comment"
 TK_STRING = "string"
 
 VENDOR_STRONG_W = 8           # 「强语义证据」的权重门槛
-# 强语义证据在 vendor 区的系数。
 #
 # 为什么给到 0.8（而不是 0.10 或 0.55）：
 # 变异测试（tests/verify.py 的 check_mutation_corpus）显示，
@@ -693,6 +692,29 @@ REGION_FACTOR = {
     TK_LINE_COMMENT: 0.15,   # 只是提到
     TK_BLOCK_COMMENT: 0.15,
 }
+
+
+# 负向上下文：命中点附近出现这些词，说明代码是在「排除 / 拒绝」而不是「读取」。
+#
+# 为什么需要：红队用一个**真实的自托管备份工具**在默认参数下打出了 [CRITICAL]，
+# 触发点正是它的安全特性 —— `NEVER_BACKUP = ['.ssh/', 'id_rsa', ...]`（**拒绝备份凭据**）。
+# 排除列表与窃取列表共用同一套正则，于是"明确不碰密钥"被判成"读取密钥"。
+#
+# 后果特别讽刺：报告让用户卸载它、换回明文上传的替代品，**安全性反而下降**。
+NEGATIVE_CONTEXT = re.compile(
+    r"never|exclude|excluded|deny|denied|block|blocked|skip|skipped|ignore|ignored|"
+    r"forbid|disallow|blacklist|prohibit|omit|without|"
+    r"不要|不应|不允许|排除|忽略|禁止|拒绝|屏蔽",
+    re.I)
+NEGATIVE_WINDOW = 120      # 命中点前后多少字符内出现负向词，就判为「排除语义」
+NEGATIVE_FACTOR = 0.15     # 排除语义下的命中权重（比注释区还低）
+
+
+def _in_negative_context(text, pos, window=NEGATIVE_WINDOW):
+    """命中点是否落在「排除 / 拒绝」语义的上下文里。"""
+    lo = max(0, pos - window)
+    hi = min(len(text), pos + window)
+    return NEGATIVE_CONTEXT.search(text, lo, hi) is not None
 
 
 def detect_lang(path):
@@ -1712,20 +1734,19 @@ def _region_ok(required, kind, relaxed=False):
     return True
 
 
-def scan_text_for_capabilities(rel_path, text, lang, bundled=False):
+def scan_text_for_capabilities(rel_path, text, lang, bundled=False,
+                               skip_prefilter=False):
     """在单个文件的文本上跑全部 pattern，返回命中列表（未聚合）。
 
-    每个命中都带上：区域类型、文件类别、行号、片段、±3 行上下文。
-    这些字段是后续「分级判定」和「触发方式推断」的全部依据。
-
-    bundled=True 表示审计目标是打包产物，分类规则随之切换（见 classify_file）。
+    skip_prefilter=True 时假定调用方已经做过预筛——避免重复计算。
+    （audit_path 需要知道预筛结果来正确统计「真正跑了正则的文件数」，
+      所以预筛的判定权移到了那里。）
     """
     if not text:
         return []
-
     # ---- 预筛：不命中任何关键词就直接返回 ----
     # 这一步把「每文件 56 个正则」降到「每文件一次关键词检查」，是最大的性能杠杆。
-    if not _prefilter_hit(text):
+    if not skip_prefilter and not _prefilter_hit(text):
         return []
 
     segs = lex_regions(text, lang)
@@ -1752,18 +1773,39 @@ def scan_text_for_capabilities(rel_path, text, lang, bundled=False):
             fw_eff = fw
             if fclass == "vendor" and pat["w"] >= VENDOR_STRONG_W:
                 fw_eff = VENDOR_STRONG_FACTOR
-            matches = []
+            # ---- 取该模式在本文件里的代表性命中 ----
+            #
+            # 【坑】原实现按**文本顺序**收集，取满 6 条就 break。这是个单点失效：
+            # 红队实测——在文件头加 13 行"更新日志"注释，把 upload-credential /
+            # repo_snapshot / aliyuncs.com 等各写 6 遍，真实代码的证据就被挤出预算，
+            # `object_storage_upload` 从 likely 直接变 absent，而恶意代码一个字节没改。
+            # 反向也成立：注释里的命中能凭空增加"模式多样性"，把等级抬上去。
+            #
+            # 修法两条：
+            #   1. 先按「区域强度」降序，再取前 6 —— 代码区优先于注释区
+            #   2. 若该模式在非注释区有命中，则**丢弃它的注释区命中**——
+            #      否则"在注释里提了几个词"就能伪装成多种独立证据
+            candidates = []
             for m in pat["re"].finditer(text):
                 kind = region_at(segs, m.start())
                 if not _region_ok(pat["region"], kind, relaxed):
                     continue
-                matches.append((m.start(), kind))
-                if len(matches) >= 6:      # 单文件单模式最多取 6 处
-                    break
-            if not matches:
-                continue
-            for pos, kind in matches:
                 rf = REGION_FACTOR.get(kind, 0.5)
+                # 「排除 / 拒绝」语义里的命中按否决处理——见 NEGATIVE_CONTEXT 的说明。
+                # 这一步专门防「把凭据排除列表判成凭据窃取」这类反向误报。
+                if _in_negative_context(text, m.start()):
+                    rf *= NEGATIVE_FACTOR
+                candidates.append((rf, m.start(), kind))
+                if len(candidates) >= 60:     # 上限：防病态输入拖慢，60 足够选出最强 6 条
+                    break
+            if not candidates:
+                continue
+            non_comment = [c for c in candidates
+                           if c[2] not in (TK_LINE_COMMENT, TK_BLOCK_COMMENT)]
+            if non_comment:
+                candidates = non_comment
+            candidates.sort(key=lambda x: -x[0])
+            for rf, pos, kind in candidates[:6]:
                 raw.append({
                     "cap": cap["id"],
                     "cap_name": cap["name"],
@@ -2190,6 +2232,7 @@ def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024, acc=None,
     """
     hits = []
     meta = {"path": path, "kind": "dir", "files_scanned": 0, "bytes_scanned": 0,
+            "files_analyzed": 0, "prefilter_rejected": 0,
             "candidates": 0, "skipped_large": 0, "skipped_vendor": 0,
             "skipped_ext": 0, "skipped_bad_entry": 0, "skipped_other": 0,
             "truncated": False, "errors": [], "asar": None}
@@ -2317,8 +2360,17 @@ def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024, acc=None,
             continue
         meta["files_scanned"] += 1
         meta["bytes_scanned"] += len(blob)
+        # 预筛在这里做（而不是在 scan_text_for_capabilities 内部），
+        # 这样台账才能区分「读到了」和「真正跑了正则」——
+        # 红队指出：原来的「实扫 N 个文件」里可能有 88.7% 一条正则都没跑，
+        # 而报告写「因技术原因未覆盖 0 项」，读者会以为全覆盖。
+        if _prefilter_hit(text):
+            meta["files_analyzed"] += 1
+        else:
+            meta["prefilter_rejected"] += 1
         file_hits = scan_text_for_capabilities(rel, text, lang,
-                                               bundled=(meta["kind"] == "asar"))
+                                               bundled=(meta["kind"] == "asar"),
+                                               skip_prefilter=True)
         if file_hits:
             if acc is None:
                 hits.extend(file_hits)
@@ -2364,6 +2416,12 @@ def audit_targets(tool, extra_paths=None, max_files=2500, include_vendor=False):
     coverage = {
         "candidates": sum(r.get("candidates", 0) for r in results),
         "scanned": sum(r.get("files_scanned", 0) for r in results),
+        # 「读到了」与「真正跑了正则」是两件事。
+        # 红队实测：ZCode 的「实扫 2731」里有 2422 个（88.7%）一条正则都没跑——
+        # 真正被完整分析的是 309 个文件 = 候选的 1.3%。
+        # 报告写「因技术原因未覆盖 0 项」，读者会以为全覆盖。这个区别必须显式呈现。
+        "analyzed": sum(r.get("files_analyzed", 0) for r in results),
+        "prefilter_rejected": sum(r.get("prefilter_rejected", 0) for r in results),
         # by_design：设计上就该跳过的（第三方依赖、压缩产物）——不算缺陷
         "skipped_vendor": sum(r.get("skipped_vendor", 0) for r in results),
         "skipped_ext": sum(r.get("skipped_ext", 0) for r in results),
@@ -2544,9 +2602,15 @@ def render_text(results, meta):
                         sm["confirmed"], sm["likely"], sm["possible"]))
             cov = st.get("coverage") or {}
             if cov:
-                L.append("    覆盖台账: 候选 %d -> 实扫 %d  |  设计内跳过: 第三方依赖 %d / 压缩产物 %d"
+                L.append("    覆盖台账: 候选 %d -> 读到 %d -> 真正跑正则 %d"
                          % (cov.get("candidates", 0), cov.get("scanned", 0),
-                            cov.get("skipped_vendor", 0), cov.get("skipped_ext", 0)))
+                            cov.get("analyzed", 0)))
+                L.append("      设计内跳过: 第三方依赖 %d / 压缩产物 %d / 未知扩展名 %d"
+                         % (cov.get("skipped_vendor", 0), cov.get("skipped_ext", 0),
+                            cov.get("skipped_other", 0)))
+                if cov.get("prefilter_rejected"):
+                    L.append("      关键词预筛未通过 %d 个（未跑正则；这是设计内的快速通道，"
+                             "但意味着它们只做了字面量检查）" % cov["prefilter_rejected"])
                 if cov.get("gaps"):
                     L.append("    !! 因技术原因未覆盖 %d 项：大文件 %d / 目录截断 %s / 读取失败 %d"
                              % (cov["gaps"], cov.get("skipped_large", 0),
@@ -3136,10 +3200,18 @@ def render_html(results, meta):
                 gaps = cov.get("gaps", 0)
                 box = "warnbox" if gaps else ""
                 P.append('<div class="%s small" style="margin-top:8px">' % box)
-                P.append('<b>覆盖台账</b>：候选 %d 个文件 &rarr; 实扫 %d 个；'
-                         '设计内跳过：第三方依赖 %d、压缩产物 %d'
+                P.append('<b>覆盖台账</b>：候选 %d 个文件 &rarr; 读到 %d 个 &rarr; '
+                         '<b>真正跑完正则 %d 个</b>；'
+                         '设计内跳过：第三方依赖 %d、压缩产物 %d、未知扩展名 %d'
                          % (cov.get("candidates", 0), cov.get("scanned", 0),
-                            cov.get("skipped_vendor", 0), cov.get("skipped_ext", 0)))
+                            cov.get("analyzed", 0),
+                            cov.get("skipped_vendor", 0), cov.get("skipped_ext", 0),
+                            cov.get("skipped_other", 0)))
+                if cov.get("prefilter_rejected"):
+                    P.append('<br>关键词预筛未通过 %d 个（未跑正则）——'
+                             '这意味着它们<b>只做了字面量检查</b>：'
+                             '若危险串是运行时拼装或编码的，会在这里被漏掉。'
+                             % cov["prefilter_rejected"])
                 if gaps:
                     P.append('<br><b>因技术原因未覆盖 %d 项</b>'
                              '（大文件 %d / 目录截断 %s / 读取失败 %d）——'

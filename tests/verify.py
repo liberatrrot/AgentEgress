@@ -393,6 +393,7 @@ def check_near_negative():
     import agentegress as ae
 
     tmp = tempfile.mkdtemp(prefix="egress-nearneg-")
+    # ---- 场景 1：轻量片段（多类别，覆盖常见误报诱因）----
     scenarios = {
         "auto_update": (
             "// 自动更新：只下载，不上传\n"
@@ -622,10 +623,30 @@ def check_mutation_corpus():
         shutil.rmtree(tmp, ignore_errors=True)
 
     baseline = rows[0]["seen_count"] if rows else 0
+    blind = [r["variant"] for r in rows if r["seen_count"] == 0]
+
+    # 【断言写错过一次】原实现是 record(..., bool(baseline), ...)——
+    # 只要基线 M0 可见就判 PASS，M4/M5/M8 全盲也不影响。
+    # 红队的评价：「这不是发现老化，是把老化写进 PASS 的注脚。」
+    #
+    # 正确的断言分两层：
+    #   · 基础变异（直接调用 / 包函数 / 拆模块 / 改标识符 / 压单行）**必须**可见
+    #     —— 它们失效意味着检出能力真的退化了，要 FAIL
+    #   · 字符串拼接 / base64 / 动态构造 是**已知边界**，允许失效，
+    #     但必须出现在结论里（那正是这张表存在的意义）
+    REQUIRED = ("M0-", "M1-", "M2-", "M3-", "M7-")
+    degraded = [r["variant"] for r in rows
+                if r["variant"][:3] in REQUIRED and r["seen_count"] == 0]
+
     detail = "基线 %d 项可见 → %s" % (baseline, " / ".join(
         "%s:%d" % (r["variant"].split("-")[0], r["seen_count"]) for r in rows))
-    return record("变异测试", bool(baseline),
-                  detail, {"rows": rows})
+    if blind:
+        detail += "；已知失效：%s" % "、".join(x.split("-")[0] for x in blind)
+    if degraded:
+        detail = "检出能力退化：%s 不再可见；%s" % ("、".join(degraded), detail)
+
+    return record("变异测试", not degraded and baseline > 0,
+                  detail, {"rows": rows, "blind": blind, "degraded": degraded})
 
 
 # ---------------------------------------------------------------- 5. 大样本（可选）
