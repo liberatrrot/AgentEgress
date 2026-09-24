@@ -27,6 +27,13 @@ AgentEgress - AI 客户端数据外传审计器
   python agentegress.py -j report.json      输出 JSON
   python agentegress.py -H report.html      输出单文件 HTML 报告（自包含，可离线打开）
   python agentegress.py --quiet             只输出摘要
+
+验收（改动本文件后必跑）：
+  python tests/verify.py --quick            语法 + 启动自检 + 标注回归 + 鲁棒性，约 25 s
+  python tests/verify.py                    同上，含 asar 大样本，约 70 s
+  python tests/verify.py --full             追加真实样本抽查
+  结果固定写到 tests/last-verify.txt；退出码 0=通过 1=失败。
+  tools/pre-commit 已接 git：改动本文件时提交前会自动跑 --quick 并拦截失败提交。
 """
 
 import os
