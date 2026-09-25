@@ -1,7 +1,7 @@
 # DOGFOODING RESULTS · Phase 1
 
-> 冻结基线：commit `f561272`，`agentegress.py` sha256 `48B914A0...F2EC7`
-> 期间**未修改任何代码 / 规则 / 权重 / 阈值**（见 `DOGFOODING-BASELINE.md`）
+> 冻结基线：commit `f561272`，`agentegress.py` sha256 `48B914A0...F2EC7`  
+> 期间**未修改任何代码 / 规则 / 权重 / 阈值**（见 `DOGFOODING-BASELINE.md`）  
 > 方法：三遍观察法 —— ① 完全不看工具建立 Ground Truth ② 跑工具做差分 ③ 攻击"不一致"并归因
 
 **目标不是 F1，是发现"以前设计时没想到的失败模式"。**
@@ -12,15 +12,15 @@
 
 ## 指标拆成两个（**取消主观权重**）
 
-旧写法 `S1 = 4.0 / S2 = 1.5` 里的 `0.5` **没有可重复定义**——
+旧写法 `S1 = 4.0 / S2 = 1.5` 里的 `0.5` **没有可重复定义**——  
 以后"又来一种新形态算几分"会变成拍脑袋，指标也就失去统计价值。
 
 **改为两个独立指标：**
 
-| 指标 | 定义 | 回答的问题 |
-|---|---|---|
-| **Root-cause novelty** | 每个样本引入的**新 failure class** 数量 | 发现了多少**新的根因** |
-| **Manifestation novelty** | 按 class 分组记录**表现形态** | 同一根因有多少种**承载形式** |
+| 指标                        | 定义                            | 回答的问题            |
+| ------------------------- | ----------------------------- | ---------------- |
+| **Root-cause novelty**    | 每个样本引入的**新 failure class** 数量 | 发现了多少**新的根因**    |
+| **Manifestation novelty** | 按 class 分组记录**表现形态**          | 同一根因有多少种**承载形式** |
 
 ```
 Root-cause novelty
@@ -45,8 +45,8 @@ structural_relation: str      # 当 structural 达到 moderate/strong 时必填�
 
 ## S2 的 CRITICAL **不判为误报**（新增观察维度）
 
-Ground Truth 认定 `uploadToCos` 有明确合法业务解释（知识库上传），
-但工具给 CRITICAL。**这不等于误报**——程序确实
+Ground Truth 认定 `uploadToCos` 有明确合法业务解释（知识库上传），  
+但工具给 CRITICAL。**这不等于误报**——程序确实  
 `读用户数据 → 加密/处理 → 取临时凭证 → 上传 COS`，能力是真的。
 
 真正的问题是：**「能力严重度」与「安全可疑程度」混在了一起。**
@@ -63,6 +63,174 @@ Business-context evidence 是否存在明确合法解释
 > **AgentEgress 评价的是「危险能力」，还是「可疑外传行为」？**
 > 若是前者，S2 的 CRITICAL 可能是对的；若是后者，它明显过重。
 
+---
+
+# 中期裁判（S3 后）
+
+## 四档分类 —— 不能都写成 "systemic"
+
+| 发现 | 当前判断 | 信心 |
+|---|---|---|
+| `semantic-role confusion` | **strong systemic candidate** | 高，但受采样污染影响 |
+| `evidence aggregation` 对强结构关系的低估 | **strong systemic candidate** | **很高**（2 个独立真实软件、2 种不同结构关系）|
+| `library-source contamination` | 真实缺陷，**尚未证明系统性** | 中 |
+| `coverage accounting` / **`coverage-induced false reassurance`** | **真实且严重** | 高；"系统性"待更多样本 |
+
+## 三条必须修正的表述
+
+### ① `3/3 samples` 要降级
+
+```
+3/3 observed  ≠  3 independent confirmations
+```
+
+S1 之后我已经知道"排除列表 / allowlist / 检测规则 / UI / schema…"都可能是陷阱，
+S2/S3 的人工分析必然主动去找。**独立性受自适应采样限制。**
+
+正式写法：
+> `strong systemic candidate; observed in 3/3 samples;
+> independence limited by adaptive sampling.`
+
+> 但这**没有削弱到"只有一点迹象"**——因为不是重复找到同一个字符串陷阱，
+> 而是在**不同程序、不同代码结构、不同语义载体**中反复找到同一根因。
+
+### ② 根因描述要加维度
+
+原表述 `lexical evidence is insufficient to infer semantic role` 不完整。更准确：
+
+> **`lexical evidence without provenance / syntactic role / execution-context
+> information is insufficient to infer capability semantics.`**
+
+因为暴露的问题实际包含三层：
+```
+字符串是什么
+    ↓
+它在代码中扮演什么角色
+    ↓
+这段代码是应用行为 / 库实现 / UI 描述 / 检测器
+```
+
+### ③ `evidence aggregation` 不是"算低了"，是"没有槽位"
+
+```
+strong evidence（S1 的 object/property relation，S2 的 argument/return relation）
+    ↓
+现有 evidence model 根本没有表达这些关系的槽位
+    ↓
+被迫降级成 same_file
+```
+
+**这不是关联度算法不好，是数据结构缺一层。**
+→ **高优先级架构候选**，不是普通规则缺陷。
+
+## Coverage 要记三个维度（不能只看文件数）
+
+```
+S1  23270 → 2731 → 309
+S2  18460 → 1327 → 602   7 个 large-file gap
+S3   6699 →  841 → 645   1 个 large-file gap
+```
+
+**单看 "S2=7 gaps / S3=1 gap" 会完全误导** ——
+S3 的那 1 个文件就是 **33.1 MB 的核心 bundle**。
+
+Phase 1 内**手工补记**（冻结期不改实现）：
+```
+file coverage              文件数覆盖
+byte coverage              字节覆盖
+eligible-code coverage     可分析代码覆盖
+largest-unseen-unit        最大的未分析单元        ← S3 = 33.1 MB
+```
+
+## `coverage-induced false reassurance`（独立命名）
+
+比 `coverage accounting failure` 更准确。**危害在于非单调关系：**
+
+```
+更多代码被分析  →  更多证据  →  风险可能上升
+更少代码被分析  →  更少证据  →  风险可能下降
+```
+
+> **当前风险等级不是「程序风险」的单调函数，而是「程序风险 × 可见度」的函数。**
+
+S3 的 opencode 就是这个形态：33.1 MB 核心逻辑未扫，报告只给 medium，
+**看起来比 ZCode/WorkBuddy 温和，但实际上它 99.5% 的代码没进分析**。
+
+## Layer 框架（判断"要不要上 data-flow"的正确问法）
+
+问题已被重新定义为：
+
+> **「从纯 lexical evidence 往上增加哪一层信息，能最大程度减少当前真实样本暴露出的错误？」**
+
+```
+Layer 0  lexical evidence                    ← 已证明不够（S1/S2/S3）
+Layer 1  semantic / provenance role          ← 有真实需求
+Layer 2  structural relation                 ← 有真实需求（S1/S2）
+Layer 3  reachability / data-flow            ← **暂时没有被证明必要**
+```
+
+**Layer 3 未被证明必要**，因为还没有样本证明：
+> 「已经知道结构关系，但仍需要真正的跨函数控制流/数据流才能判断」
+
+**所以绝对不要因为"出现 strong structural"就立刻上 CFG/data-flow。**
+
+## Ground Truth 记录扩展（不改冻结流程，只加记录字段）
+
+```
+YES / NO / UNKNOWN / YES(weak) / YES(strong)
+ground_truth_revision = tool-assisted        # 被工具证据推翻过的，标记出来
+```
+
+未来回看时能区分「人工直接判断」与「相互审查后的判断」。
+
+## 独立性受限的其他证据源
+
+**opencode 是开源的**，可以对照上游真实源码。但**不用它改变 Ground Truth**，
+而是留到 Phase 1 之后回答：
+> **bundle provenance 到底能不能恢复？**（`source file ↕ bundle location` 是否有稳定映射）
+> 这可能直接决定 `library-source contamination` 后面要不要做。
+
+## S4 的四个研究假设（不再"平均地看十个问题"）
+
+```
+H1  semantic-role confusion 是否持续
+    → 不主动只找已知 12 类；仍按正常流程，盲差分时检查「这条 evidence 的真实角色是什么」
+
+H2  strong structural relation 是否第三次出现
+    → 记录关系类型：same-object / argument-flow / return-value /
+                    property-flow / call-chain / import-relation
+
+H3  library-source contamination 是否复现
+    → 关注 bundled SDK / crypto / HTTP client / uploader / compression library
+
+H4  coverage-induced false reassurance 是否有第二个实例        ← 本轮最想看
+    → 不只问"有没有大文件没扫"，还问「大文件没扫时，风险结论是否系统性变温和」
+    → 直接比较：unseen code importance  vs  reported severity
+```
+
+**S5（`tmp_attack`）彻底从"发现问题"的指标里剥离** ——
+它只用于**验证 S1–S4 形成的假设能否被主动构造攻击复现**。
+
+## Phase 1 最终产出：矩阵
+
+| Root cause | S1 | S2 | S3 | S4 | 独立性 | 状态 |
+|---|:-:|:-:|:-:|:-:|---|---|
+| semantic-role confusion | ✓ | ✓ | ✓ | ? | 受污染 | systemic candidate |
+| evidence aggregation（understate）| ✓ | ✓ | — | ? | 较高 | systemic candidate |
+| library-source contamination | — | ✓ | ? | ? | 中 | pending |
+| evidence dilution | ✓ | — | ? | ? | 中 | pending |
+| coverage accounting | — | — | ✓ | ? | 较高 | pending |
+| coverage-induced false reassurance | — | — | ✓ | ? | 较低 | pending |
+
+> **判断没有改变方向**：继续 S4，不修。
+> 但重点从"继续找 bug"升级成"**验证这些 failure class 是否真的构成架构边界**"。
+>
+> 最值得期待的不是再发现第 13 个 semantic-role 变体，
+> 而是看看 **S4 会不会出现第三个 `strong structural`，
+> 以及第二个 `coverage-induced false reassurance`。**
+
+---
+
 ## coverage loss reasons 要分类统计
 
 ```
@@ -73,13 +241,16 @@ Business-context evidence 是否存在明确合法解释
 这已不是报告优化问题，而是研究变量：**检测器最终看到的代码量，与实际代码量差多少？**
 
 必须区分：
+
 ```
 pattern failed            ← 规则没命中
 pattern never got to run  ← 文件根本没跑到正则
 ```
+
 **这两个是完全不同的问题**，混在一起谈"漏报率"没有意义。
 
 Phase 1 后期按原因归类：
+
 ```
 prefilter / file size / encoding / unsupported archive / third-party / generated / other
 ```
@@ -95,7 +266,7 @@ S2 出现的正当流程（**保留，不回改**）：
 记录：谁推翻了谁 + 基于什么新证据
 ```
 
-**不回头覆盖第一遍** —— 否则就看不出"三遍流程真的在相互审查"。
+**不回头覆盖第一遍** —— 否则就看不出"三遍流程真的在相互审查"。  
 流程已从 `人工裁判 → 工具考试` 变成 `独立证据 A ↕ 独立证据 B → 相互审查`。
 
 ## S5 放最后
@@ -115,22 +286,22 @@ S5 适合做**假设验证**，不适合作为**发现新模式**的主要证据
 
 ## 第一遍 · Ground Truth（独立建立，未参考工具）
 
-**工具**：独立写的 `tests/dogfood/unpack.py`（不 import agentegress）+ `look.py`
+**工具**：独立写的 `tests/dogfood/unpack.py`（不 import agentegress）+ `look.py`  
 （只在 minified 代码里定位关键词并打印上下文，判断由人做出）
 
-| # | 问题 | 判定 | 人工依据（文件:行 + 原文） |
-|---|---|---|---|
-| Q1 | 工作区读取 | **YES** | `out/scheduler/index.js:832` `conversationWorkspaceRoot`；`repoSnapshot` 全库 80 处 |
-| Q2 | 敏感文件读取 | **NO** | `.ssh/` **0 处**；`NEVER_` **0 处**。反证见下方分歧 1 |
-| Q3 | 归档 | **YES** | `out/host/index.js:477` `import{createGzip as Bst}from"zlib"`；`:479` `a(Vst,"writeGzipTarToPath")` |
-| Q4 | 加密 | **YES** | `out/host/index.js:477` 同时 import `createCipheriv` **与 `publicEncrypt`** → 信封加密（非对称包裹对称密钥） |
-| Q5 | 外部网络 sink | **YES** | `undici` 的 `fetch`；`zcode.z.ai`；`*.aliyuncs.com` |
-| Q6 | 对象存储 | **YES** | `out/host/index.js:332` `a(Iot,"buildOssFormFields")`，构造完整 OSS PostObject 表单（`x-oss-signature`/`policy`/`x-oss-credential`） |
-| Q7 | 自动触发 | **YES** | `out/scheduler/index.js:834` `Hn("info","cron scheduler started")` + `DP=setInterval(NP,uBe)`；上下文含 `off-peak recoverInterrupted` |
+| #  | 问题         | 判定         | 人工依据（文件:行 + 原文）                                                                                                                                                                                                                                                                                          |
+| -- | ---------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Q1 | 工作区读取      | **YES**    | `out/scheduler/index.js:832` `conversationWorkspaceRoot`；`repoSnapshot` 全库 80 处                                                                                                                                                                                                                          |
+| Q2 | 敏感文件读取     | **NO**     | `.ssh/` **0 处**；`NEVER_` **0 处**。反证见下方分歧 1                                                                                                                                                                                                                                                               |
+| Q3 | 归档         | **YES**    | `out/host/index.js:477` `import{createGzip as Bst}from"zlib"`；`:479` `a(Vst,"writeGzipTarToPath")`                                                                                                                                                                                                       |
+| Q4 | 加密         | **YES**    | `out/host/index.js:477` 同时 import `createCipheriv` **与 `publicEncrypt`** → 信封加密（非对称包裹对称密钥）                                                                                                                                                                                                               |
+| Q5 | 外部网络 sink  | **YES**    | `undici` 的 `fetch`；`zcode.z.ai`；`*.aliyuncs.com`                                                                                                                                                                                                                                                         |
+| Q6 | 对象存储       | **YES**    | `out/host/index.js:332` `a(Iot,"buildOssFormFields")`，构造完整 OSS PostObject 表单（`x-oss-signature`/`policy`/`x-oss-credential`）                                                                                                                                                                              |
+| Q7 | 自动触发       | **YES**    | `out/scheduler/index.js:834` `Hn("info","cron scheduler started")` + `DP=setInterval(NP,uBe)`；上下文含 `off-peak recoverInterrupted`                                                                                                                                                                         |
 | Q8 | **数据关联证据** | **YES（强）** | `out/host/index.js:487`：`objectUpload:{url:r.oss.host, maxBytes:Math.max(t.encryptedArtifact.encryptedSizeBytes,1), formFields:{...}}` —— **加密产物的字节数直接作为上传表单的 maxBytes**，同一对象字面量内。同文件另有 `class RepoSnapshotUpload` / `uploadPostObject` / `uploadPutObject` / `consumeUploadCredential` / `uploadObject` |
-| Q9 | 合法业务解释 | **部分** | 遥测（ARMS RUM / APM）是标准做法；快照上传有 2026-09 事件背景 |
+| Q9 | 合法业务解释     | **部分**     | 遥测（ARMS RUM / APM）是标准做法；快照上传有 2026-09 事件背景                                                                                                                                                                                                                                                               |
 
-**Q9 的克制说明**：本栏**不判"是否恶意"**。按基线文件的要求，
+**Q9 的克制说明**：本栏**不判"是否恶意"**。按基线文件的要求，  
 「安全意图」与「恶意/非恶意」必须分开——`oss_export` 已经踩过这个坑。
 
 ## 第二遍 · AgentEgress 输出（冻结版）
@@ -161,11 +332,12 @@ S5 适合做**假设验证**，不适合作为**发现新模式**的主要证据
 
 ## 第三遍 · 分歧与归因
 
-> **记录标准（S1 后修订）**
+> **记录标准（S1 后修订）**  
 > 每个分歧必须带三个字段，比 TP/FP/FN 更有用：
+>
 > - `direction`：`overstate`（把弱证据说强）/ `understate`（把强证据说弱）/ `wrong-semantics`（事实对、语义错）
 > - `class`：8 类 failure class 之一
-> - `structural`：该样本中「代码结构已表达关联，但工具只能表示成共现」的程度
+> - `structural`：该样本中「代码结构已表达关联，但工具只能表示成共现」的程度  
 >   —— `none` / `weak` / `moderate` / `strong`
 
 ### 分歧 1 ★★★ · 凭据文件访问：人工 NO ↔ 工具 **confirmed**
@@ -181,7 +353,7 @@ S5 适合做**假设验证**，不适合作为**发现新模式**的主要证据
     ".env.production",".npmrc","id_rsa","id_dsa","id_ecdsa","id_ed25519"]);
 ```
 
-**人工读代码**：这是一个**文件名排除集合**（`new Set([...])` 用作"不纳入的名单"），
+**人工读代码**：这是一个**文件名排除集合**（`new Set([...])` 用作"不纳入的名单"），  
 不是"要去读的文件列表"。
 
 - `direction` = **`wrong-semantics`**
@@ -193,16 +365,18 @@ S5 适合做**假设验证**，不适合作为**发现新模式**的主要证据
 > 工具拿到了正确的字符串，但**误判了这些字符串在代码里承担的语义角色**。
 >
 > 负向语义的表达方式远不止"显式否定词"：
+>
 > ```
 > never(...)   exclude(...)   Set([...])   if (...)   filter(...)   denylist
 > ```
-> 甚至更深地藏在控制流里。**v0.2.6 加的 `NEGATIVE_CONTEXT`
-> 只覆盖了「显式写明排除」，覆盖不到「用数据结构表达排除」。**
+>
+> 甚至更深地藏在控制流里。**v0.2.6 加的 `NEGATIVE_CONTEXT`  
+> 只覆盖了「显式写明排除」，覆盖不到「用数据结构表达排除」。**  
 > 这条比"再加几个词表"更根本——它是**结构语义缺失**，不是词表不全。
 
 ### 分歧 2 ★★ · Git 历史访问：人工 **NO** ↔ 工具 **likely**
 
-同一份代码里 `Pct = new Set([".git"])` —— **`.git` 出现在排除集合里**。
+同一份代码里 `Pct = new Set([".git"])` —— **`.git` 出现在排除集合里**。  
 把 `.git` 列入排除集，恰恰说明**不处理** `.git`。
 
 - `direction` = **`wrong-semantics`**
@@ -225,22 +399,24 @@ S5 适合做**假设验证**，不适合作为**发现新模式**的主要证据
 - `structural` = `none`
 
 > **新失败模式 `evidence dilution`** —— 与之前"一个模式只贡献一次"的讨论形成闭环：
+>
 > ```
 > 旧担忧：弱证据 × 很多次 → 刷分（已用 max + 多样性封顶解决）
 > 新发现：弱证据 × 很多次 → 强证据辨识度下降
 > ```
-> 说明 evidence aggregation 需要的可能不是单纯累加，而是
-> `strength × independence × specificity × provenance`。
+>
+> 说明 evidence aggregation 需要的可能不是单纯累加，而是  
+> `strength × independence × specificity × provenance`。  
 > **但现在不碰公式，只记录现象。**
 
 ### 分歧 4 ★★★ · 数据关联被**低估**
 
-**人工发现**：`out/host/index.js:487` 里，
-`objectUpload.maxBytes` 直接取自 `t.encryptedArtifact.encryptedSizeBytes`，
-且同文件有 `class RepoSnapshotUpload` + `uploadObject` / `uploadPostObject` / `uploadPutObject`
+**人工发现**：`out/host/index.js:487` 里，  
+`objectUpload.maxBytes` 直接取自 `t.encryptedArtifact.encryptedSizeBytes`，  
+且同文件有 `class RepoSnapshotUpload` + `uploadObject` / `uploadPostObject` / `uploadPutObject`  
 / `consumeUploadCredential` 的**方法链**。
 
-**工具输出**：`[阻断级] 工作区采集+加密+对象存储直传  关联度: 较强(same_file)`
+**工具输出**：`[阻断级] 工作区采集+加密+对象存储直传  关联度: 较强(same_file)`  
 并附说明「**共现 ≠ 在同一条可达路径上，可能来自互不相关的代码**」。
 
 - `direction` = **`understate`**
@@ -250,53 +426,57 @@ S5 适合做**假设验证**，不适合作为**发现新模式**的主要证据
 > **为什么单独加 `structural` 这个字段**
 >
 > 老大给的证据表达能力梯度：
+>
 > ```
 > 文本共现  →  结构关联  →  局部数据依赖  →  跨函数可达路径  →  完整 source→sink
 >    ↑            ↑
 >  现有模型    这次实际发现的位置
 > ```
-> 这次发现的**不是**"需要完整 data-flow"，而是
+>
+> 这次发现的**不是**"需要完整 data-flow"，而是  
 > **"结构关联 / 局部数据依赖已经超出当前模型的表达能力"**。
 >
 > 第一阶段可能只需要一个**很窄的中间层**：
+>
 > ```
 > object literal · parameter relation · same function · same call chain · same imported symbol
 > ```
-> 即先让工具能表达：「这两个证据不只是出现在同一个 bundle，而是代码里存在**可观察的结构关系**」。
+>
+> 即先让工具能表达：「这两个证据不只是出现在同一个 bundle，而是代码里存在**可观察的结构关系**」。  
 > 这远比引入 AST/CFG/data-flow 便宜。
 >
-> **但现在不做。** 当前最重要的是回答：
+> **但现在不做。** 当前最重要的是回答：  
 > **这是 ZCode 的特例，还是多个真实客户端都存在的普遍失败模式？**
 
 ## Failure Class 汇总
 
-| 分歧 | direction | class | structural | 可复现 |
-|---|---|---|---|---|
-| 1 凭据访问 confirmed | `wrong-semantics` | `semantic-role confusion` | none | ✅ A1 |
-| 2 Git 历史 likely | `wrong-semantics` | `semantic-role confusion` | none | ✅ A1 |
-| 3 遥测端点计入 OSS 证据 | `overstate` | `pattern failure` | none | ✅ A2 |
-| 4 强关联被降格为共现 | **`understate`** | `evidence aggregation` | **strong** | ✅ A3 |
+| 分歧               | direction         | class                     | structural | 可复现  |
+| ---------------- | ----------------- | ------------------------- | ---------- | ---- |
+| 1 凭据访问 confirmed | `wrong-semantics` | `semantic-role confusion` | none       | ✅ A1 |
+| 2 Git 历史 likely  | `wrong-semantics` | `semantic-role confusion` | none       | ✅ A1 |
+| 3 遥测端点计入 OSS 证据  | `overstate`       | `pattern failure`         | none       | ✅ A2 |
+| 4 强关联被降格为共现      | **`understate`**  | `evidence aggregation`    | **strong** | ✅ A3 |
 
 **四个分歧三种方向** —— 这本身就是 S1 最重要的产出：
 
-> **AgentEgress 的错误不是单向的。**
-> 它既可能把无关证据拼成故事（overstate），
+> **AgentEgress 的错误不是单向的。**  
+> 它既可能把无关证据拼成故事（overstate），  
 > 也可能**看到了真实结构，却因为证据模型太粗而无法表达**（understate）。
 
-这意味着下一阶段真正该优化的对象可能不是 `pattern coverage`，
-而是 **`evidence representation`**。
+这意味着下一阶段真正该优化的对象可能不是 `pattern coverage`，  
+而是 **`evidence representation`**。  
 **但要不要走到 `AST → CFG → data-flow`，现在不决定。**
 
 ## ⚠ 采样污染声明（必须记住）
 
 **S1 完成后，我已经知道**：排除集合、OSS 遥测、结构关联这三个概念。
 
-**S2～S5 的人工分析不可能真正"忘掉"它们**，会下意识去找。
+**S2～S5 的人工分析不可能真正"忘掉"它们**，会下意识去找。  
 所以：
 
-1. **本轮记录显式声明该污染** —— 后续样本若再发现同类问题，
+1. **本轮记录显式声明该污染** —— 后续样本若再发现同类问题，  
    其"独立性"是打折的，必须在结果里标注
-2. 为降低污染，S2 仍严格按同一顺序执行：
+2. 为降低污染，S2 仍严格按同一顺序执行：  
    `独立解包 → 独立提取上下文 → 10 项 Ground Truth → 跑工具 → 盲差分`
 3. **Ground Truth 必须在跑工具之前写完**，且不得回头修改
 
@@ -317,8 +497,8 @@ strong structural   同一对象字面量内的字段引用、同一方法链、
 
 S1 = **strong structural relation**
 
-> S5 结束后就能回答关键问题：
-> **真实样本中，「字符串共现不足以表达、但又不需要完整 data-flow」的案例到底有多少？**
+> S5 结束后就能回答关键问题：  
+> **真实样本中，「字符串共现不足以表达、但又不需要完整 data-flow」的案例到底有多少？**  
 > 这才真正能决定下一步架构。
 
 ## 复现步骤（可独立复跑）
@@ -336,12 +516,12 @@ A3  python tests/dogfood/look.py tests/dogfood/s1-zcode "encryptedArtifact" --wi
 
 ## Action
 
-| 分歧 | Action | 说明 |
-|---|---|---|
-| 1 | **Need More Evidence** | 单样本不足以断定"排除列表"是普遍模式。需在 S2/S3 验证：其他客户端是否也用 `new Set`/数组表达排除？ |
-| 2 | **Need More Evidence** | 同上，与 1 同源 |
-| 3 | **Need More Evidence** | 需确认 `aliyun_oss` 模式的定义域；但**先不改**——按纪律，Phase 1 不动代码 |
-| 4 | **Need More Evidence** | 需要设计一个能表达"同对象内字段引用"的判据。**但先不改** |
+| 分歧 | Action                 | 说明                                                          |
+| -- | ---------------------- | ----------------------------------------------------------- |
+| 1  | **Need More Evidence** | 单样本不足以断定"排除列表"是普遍模式。需在 S2/S3 验证：其他客户端是否也用 `new Set`/数组表达排除？ |
+| 2  | **Need More Evidence** | 同上，与 1 同源                                                   |
+| 3  | **Need More Evidence** | 需确认 `aliyun_oss` 模式的定义域；但**先不改**——按纪律，Phase 1 不动代码          |
+| 4  | **Need More Evidence** | 需要设计一个能表达"同对象内字段引用"的判据。**但先不改**                             |
 
 **本轮不产生 Fix。** 按基线纪律，所有分歧先累积，Phase 1 结束后再统一判断。
 
@@ -349,9 +529,10 @@ A3  python tests/dogfood/look.py tests/dogfood/s1-zcode "encryptedArtifact" --wi
 
 ## Novel Failure Mode 计数
 
-| 样本 | 新失败模式 | 说明 |
-|---|---|---|
+| 样本 | 新失败模式 | 说明                                                                                                                 |
+| -- | ----- | ------------------------------------------------------------------------------------------------------------------ |
 | S1 | **4** | `semantic interpretation`（排除列表误读）· `pattern`（遥测域名混入）· `evidence dilution`（证据稀释）· `evidence aggregation`（**低估**强关联） |
+
 
 > 其中 **`evidence dilution`** 与 **低估方向的 `evidence aggregation`**
 > 是此前五轮评审**从未出现过**的类型——前几轮全是"高估"（把弱证据说强）问题，
@@ -656,6 +837,7 @@ InputObject = exports_Schema.StructWithRest(exports_Schema.Struct({
 **`ia_archiver` 是 Internet Archive 爬虫的 User-Agent 字符串**，
 与"创建归档"毫无关系——只是**恰好包含 `archiver` 这个词**。
 
+
 > **到 S3，`semantic-role confusion` 的形态已累计 7 种**：
 > ```
 > S1  denylist（new Set）· CSP allowlist
@@ -834,4 +1016,266 @@ Manifestation novelty
 **本轮仍不产生 Fix。冻结继续。**
 
 > **⚠ 采样污染（累积）**：我现在已经知道 semantic-role confusion 的 12 种形态。
-> S4 的人工分析必然受此影响。**此后的"新形态"其独立性递减**，记录时必须标注。 —— 后续样本应观察该值是否下降。
+> S4 的人工分析必然受此影响。**此后的"新形态"其独立性递减**，记录时必须标注。
+
+---
+
+# S4 · 夸克网盘 7.3.5.810
+
+**样本变更**：原计划的 Kimi / Cursor 不可用。扫描全盘后从候选人里选夸克网盘：
+
+```
+258.2 MB  QuarkCloudDrive\7.3.5.810\Resources\app.asar   ← 选它
+257.0 MB  QuarkCloudDrive\7.2.2.806
+240.7 MB  QuarkCloudDrive\7.0.6.771
+175.8 MB  BaiduNetdisk\...\BrowserEngine\resources\app.asar
+108.3 MB  He3\resources\app.asar            （开发者工具集）
+ 97.0 MB  yakit\resources\app.asar          （安全工具）
+ 85.7 MB  Clash Party\resources\app.asar
+ 77.0 MB  goby-win-x64-2.9.20\resources\app.asar
+ 30.6 MB  Clash for Windows\resources\app.asar
+ 11.4 MB  LGHUB\resources\app.asar
+```
+
+**为什么选它**：
+1. **领域完全不同** —— 前三个是 AI 编码工具，这是网盘
+2. **天然具备上传能力**（核心功能）→ 直接考验「能力」与「可疑」的边界
+3. **结构上正好是 H4 的理想对照**：核心逻辑只有 **1.7 MB 且全部可扫**
+   （`/dist/main/main.js` 1165 KB < 8 MB 上限）
+
+## 第一遍 · Ground Truth（**在跑工具之前写完**）
+
+解包范围：`/dist/main` `/dist/server` `/dist/utility-process` `/dist/workers` `/dist/preloads`
+→ 25 个文件 / **1.7 MB**（全部核心逻辑）
+
+| # | 问题 | 判定 | 人工依据 |
+|---|---|---|---|
+| Q1 | 工作区/文件读取 | **YES** | `readdir` 13 处；`readFileSync`；文件扫描 worker（`filescan.js` / `watcher.js`）|
+| Q2 | 敏感文件读取 | **NO** | `id_rsa` **0 处**、`.ssh` **0 处** |
+| Q3 | 归档 | **NO** | `createGzip` **0 处**；`archiver` 仅 1 处 = **`ia_archiver`**（爬虫 UA）|
+| Q4 | 加密 | **YES（非标准 API）** | 见下 |
+| Q5 | 外部网络 sink | **YES** | `quark` 786 处；`hosts` 含 `ZH / QUARK / INTL` 三环境 |
+| Q6 | 对象存储/上传 | **YES** | `uploadFilesByConvert` / `toMainUploadFiles`（`uploadFile` 16 处）—— 网盘核心功能 |
+| Q7 | 自动触发 | **YES** | `setInterval` 7 处：`_initResourceCollect` / `_collectSysResource`（**采系统资源**，60s 周期）|
+| Q8 | 数据关联证据 | **待查** | |
+| Q9 | 合法业务解释 | **YES（功能必需）** | 网盘上传用户文件是其**唯一核心功能** |
+| Q10 | 结构关联强度 | **待查** | |
+
+### S4 的关键观察（写于跑工具之前）
+
+**① `upload` 353 处的语义大部分是「遥测上报」，不是「文件上传」**
+
+```
+main/190.js:  this.exporter.genUploadUrl(o)
+              i._url = this.exporter.genUploadUrl(i)
+              t.getAddr = … + t.uploadPath …
+```
+这是 **`itrace-next` 前端监控系统**（指标名 `JSERR / API / PERF / RESERR / PVUV`）。
+**同一个词 `upload` 承载两种完全不同的语义** —— semantic-role confusion 的候选。
+
+**② Q4 加密是「非标准 API 实现」—— 可能导致漏报（B 类）**
+
+```
+main/main.js:  function h(e){ return p.encrypt({number: d.default.secureNo, plain:e}).cipher_b64 }
+               this.options.encrypt && (e=t, t=p.decrypt({cipher_b64:e}).plain), …
+```
+**有明确的应用级加解密**（`cipher_b64`，用于配置文件），
+但 **`createCipheriv` 是 0 处** —— 用的不是 Node 标准 crypto API。
+
+> **人工判 YES，工具很可能判 absent** —— 这会是**第一个 B 类（漏报）**。
+> 机制不是"规则没写"，而是**规则依赖的标准 API 在这份实现里不存在**。
+
+**③ `archiver` 的 `ia_archiver` 陷阱在 S4 复现**（S3 已见过一次）
+—— 这是 `semantic-role confusion` 的**复用形态**，不是新形态。
+
+## 第二遍 · AgentEgress 输出（冻结版）
+
+```
+确认存在高危外传能力（注意：1 个文件未覆盖）
+已确认 2 / 疑似 0 / 弱信号 2
+
+覆盖台账: 候选 2897 -> 读到 75 -> 真正跑正则 65
+  设计内跳过：第三方依赖 2815 / 压缩产物 6 / 未知扩展名 1607
+  关键词预筛未通过 10 个
+!! 因技术原因未覆盖 1 项：大文件 1
+
+[CONFIRMED] 对象存储直传 5/46/294
+[CONFIRMED] 失败自动重试 3/5/61
+[POSSIBLE] 浏览器状态访问 1/37/153 | 命令执行 2/16/16
+未检出: 信封加密、遥测上报
+```
+
+## 第三遍 · 分歧与归因
+
+### 分歧 1 ★★★ · **首次出现 B 类（漏报）**：加密用非标准 API，检出了但等级不足
+
+**人工 Ground Truth Q4 = YES**：
+```js
+function h(e){ return p.encrypt({number: d.default.secureNo, plain:e}).cipher_b64 }
+this.options.encrypt && (e=t, t=p.decrypt({cipher_b64:e}).plain), …
+```
+
+**工具**：`信封加密 absent`，但 JSON 里显示 **`模式1 文件1 命中1 score=0.92`**
+
+> **修正我的初判**：不是"完全没看见"，而是**检出了 1 处、但远低于 `possible` 阈值（norm 0.12）**。
+> 机制是**阈值不足**，不是完全不可见。
+
+- `direction` = 缺失（B 类漏报）
+- `class` = **`non-canonical-implementation gap`** ← 新 failure class
+- `structural` = `none`
+
+> **机制**：规则依赖 Node 标准 crypto API（`createCipheriv` / `RSA-OAEP`），
+> 而这份实现用的是自己的 `p.encrypt(...).cipher_b64`。**只有 1 处边缘命中，够不到阈值。**
+>
+> **一般化**：**任何"标准 API 白名单"式的能力定义，都会对非标准实现失准。**
+> 加密、压缩、HTTP 客户端、序列化——都可能有自研 / WASM 替代实现。
+
+### 分歧 4 ★★★ · B 类漏报的**第二、第三个**实例
+
+查 JSON 后发现三处都是"命中不足"而非"零命中"：
+
+| 能力 | 人工 | 工具 | JSON 实际 |
+|---|---|---|---|
+| **工作区全量快照** | **YES**（`readdir` 13 处、`filescan.js`/`watcher.js` worker）| **完全不在列表**（0 命中）| — |
+| 信封加密 | YES | absent | 模式1 / 文件1 / 命中1 |
+| **遥测上报** | **YES** | **absent** | **模式2 / 文件16 / 命中48** |
+
+**「遥测上报」48 处命中却判 absent** 值得单独注意 ——
+说明命中的**全是低权重**（注释区 / 低权重模式），`score=1.48` 远低于阈值。
+
+- `direction` = 缺失
+- `class` = `non-canonical-implementation gap`（分歧 1）+ **阈值不足**（分歧 4）
+- **Need More Evidence**
+
+> **S4 一次暴露三个漏报，而 S1–S3 一个都没有。**
+> 这不是巧合——**S1–S3 都是"报得太多"（误报），S4 第一次变成"报得太少"（漏报）**。
+
+## Failure Class 汇总（S4）
+
+| 分歧 | direction | class | structural |
+|---|---|---|---|
+| 1 加密漏报 | 缺失 | **`non-canonical-implementation gap`** ← 新 | none |
+| 2 H4 假设修正 | — | （判据修正，不是缺陷）| — |
+| 3 证据杂质（ARMS/DOM/mock）| `wrong-semantics` + `overstate` | `semantic-role confusion` ×2 新形态 | none |
+| 4 三个 B 类漏报 | 缺失 | `non-canonical-implementation` + 阈值不足 | — |
+
+## ★ S4 最重要的结构性对比
+
+```
+           人工判定      工具判定        方向
+S1 ZCode     多项YES     CRITICAL       误报为主（overstate / wrong-semantics）
+S2 WorkBuddy 多项YES     CRITICAL       误报为主
+S3 opencode  几乎全NO    medium         误报为主（但靠覆盖不足"侥幸"保守）
+S4 Quark     多项YES     CRITICAL       ← 第一次以【漏报】为主
+```
+
+**S4 的 CRITICAL 里，工具"报对了"和"报错了"同时存在**：
+- ✅ 对象存储直传 confirmed（人工 YES，网盘核心功能）
+- ❌ 证据里混入 ARMS 探针检测、mock 响应头、DOM API
+- ❌ **同时漏掉了加密、工作区快照、遥测上报**（人工全 YES）
+
+> **这把"误报/漏报"从一个维度问题变成了两个维度**：
+> 同一个样本上，工具**既能报出不存在的能力语义，又会漏掉真实存在的能力**。
+> 而且这两件事**互不抵消**——它们发生在不同的能力项上。
+
+### 分歧 2 ★★ · H4 假设被修正：**「设计内跳过」≠「技术性缺口」**
+
+S4 的覆盖看起来极低（候选 2897 → 读到 75），我一度以为发现了 H4 的第二个实例。
+**查证后不成立**：
+
+```
+skipped_vendor = 2815   ← 97% 是第三方依赖（设计内跳过）
+skipped_large  = 1      ← 真正的技术缺口只有 1 项
+```
+
+**报告也是诚实的**（如实写了「设计内跳过：第三方依赖 2815」）。
+
+> **这修正了 H4 的判据**：
+> ```
+> 设计内跳过（vendor / 扩展名）    → 不影响结论强度，是预期行为
+> 技术性缺口（大文件 / 编码 / 截断）→ 影响结论强度，是 coverage-induced false reassurance 的来源
+> ```
+>
+> 所以 H4 要问的不是"读到多少"，而是
+> **「技术性缺口里是否包含核心逻辑」**。
+> S3（33.1 MB 核心 bundle 被跳）成立；S4（只有 1 个大文件，且非核心）不成立。
+
+**结论：`coverage-induced false reassurance` 在 S4 未复现**，
+但它需要的判据现在清楚了 —— 这正是"修正假设"的价值，不是"没找到"。
+
+### 分歧 3 ★★ · `semantic-role confusion` 继续（复用形态 + 1 个新形态）
+
+工具的「对象存储直传 confirmed」证据里有杂质：
+
+```
+阿里云 OSS:
+  /dist/renderer/ai_page-*.entry.js  client = new window.OSS({region: ossRegion || "oss-cn-hangzhou"…})   ← 真实（前端 OSS SDK）
+  /dist/renderer/common-*.entry.js   …-1===e.indexOf("aliyuncs.com/r.png")…                              ← ARMS 探针检测！
+腾讯云 COS:
+  /dist/renderer/backend_migration-*.entry.js  'x-cos-hash-crc64ecma': [_generateRandomString(64,64)]    ← 响应头伪造（mock/测试代码）
+```
+
+- `aliyuncs.com/r.png` 是 **ARMS 前端监控探针的排除规则** —— 与 S1 分歧 3 同一机制（`evidence dilution`）
+- `x-cos-hash-crc64ecma` 是**伪造的响应头**（在 mock 里）—— **新形态：mock/测试代码被当成真实能力**
+
+「命令执行」的证据里有：
+```
+/dist/renderer/*.js  r.prototype.createProcessingInstruction=function(e){throw new Error("This DOM method is not implemented."…
+```
+**`createProcessingInstruction` 是 XML DOM API**，被 `shell_invoke` 命中 ——
+**新形态：DOM/XML API 名与 shell 命令同名**
+
+**S4 新增 2 种 semantic-role 形态**（累计 14 种）：
+```
+mock/测试代码（伪造响应头）· DOM XML API（createProcessingInstruction）
+```
+
+## H1–H4 验证结果
+
+| 假设 | 结果 |
+|---|---|
+| **H1** semantic-role confusion 是否持续 | ✅ **持续**（2 种新形态，累计 14）|
+| **H2** strong structural 是否第三次出现 | ❌ **未出现**（S4 未发现结构关联；见下）|
+| **H3** library-source contamination 是否复现 | ❌ 未复现（S4 的 vendor 被正常跳过，无 bundle 混杂）|
+| **H4** coverage-induced false reassurance 第二实例 | ❌ **未复现**，但**判据被修正**（设计内跳过 ≠ 技术性缺口）|
+
+> **H2/H3/H4 三个都没复现**，这本身是重要信息：
+> 说明它们**可能不是普遍机制，而是特定条件触发**。这正是"不做修复、先取样"的价值。
+
+### 关于 H2 未复现的说明
+
+S4 的 Ground Truth 里 **Q10 = 未能建立**：
+夸克网盘虽然**具备上传能力**（`uploadFilesByConvert`），
+但人工在 `/dist/main` + `/dist/preprocess` 里**没有找到"读取数据 → 加密/处理 → 上传"
+在代码结构上明确相连的证据**（不像 S1 的对象字段引用、S2 的参数传递）。
+
+**所以 H2 的"未出现"是诚实的观察结果，不是"没看"**。
+（另外要注意 S4 的采样污染：我已知 S1/S2 的结构关系长什么样，
+如果在 S4 找到，其独立性是打折的。）
+
+## Novel Failure Mode 计数
+
+```
+Root-cause novelty
+  S1 = 4   semantic-role / pattern / evidence dilution / evidence aggregation
+  S2 = 1   library-source contamination
+  S3 = 1   coverage accounting
+  S4 = 1   non-canonical-implementation gap          ← 首个「漏报」类根因
+
+Manifestation novelty
+  semantic-role confusion:  S1=2  S2=3  S3=7  S4=2   （累计 14，1 个根因）
+```
+
+## Action
+
+| 分歧 | Action |
+|---|---|
+| 1 加密漏报（非标准 API）| **Need More Evidence**（这是**方向性新发现**，值得 S5 专门验证）|
+| 2 H4 判据修正 | 已记录（判据：技术性缺口 ≠ 设计内跳过）|
+| 3 证据杂质 | **Need More Evidence** |
+| 4 工作区快照漏报 | **Need More Evidence**（待查 JSON）|
+
+**本轮仍不产生 Fix。冻结继续。**
+
+> **⚠ 采样污染（累积 + 加强）**：现在已知 14 种形态 + 3 个未复现的假设。
+> S5 的定位因此更明确：**它不再是"第 5 个样本"，而是"假设验证器"**。
