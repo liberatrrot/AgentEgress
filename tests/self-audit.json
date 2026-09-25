@@ -1,36 +1,16 @@
 {
   "structure": {
-    "total_lines": 3480,
-    "code_lines": 2831,
-    "comment_lines": 310,
-    "comment_ratio": 0.0891,
-    "functions": 66,
+    "total_lines": 3631,
+    "code_lines": 2933,
+    "comment_lines": 306,
+    "comment_ratio": 0.0843,
+    "functions": 94,
     "classes": 3,
     "longest_funcs": [
       [
-        "render_html",
-        303,
-        3029
-      ],
-      [
-        "audit_path",
-        158,
-        2228
-      ],
-      [
-        "render_md",
-        150,
-        2681
-      ],
-      [
-        "render_text",
-        141,
-        2525
-      ],
-      [
         "main",
         141,
-        3336
+        3487
       ],
       [
         "lex_regions",
@@ -46,29 +26,29 @@
         "expand_snapshot",
         81,
         514
+      ],
+      [
+        "summarize_capabilities",
+        81,
+        2145
+      ],
+      [
+        "audit_targets",
+        71,
+        2404
+      ],
+      [
+        "aggregate_from_buckets",
+        65,
+        1888
+      ],
+      [
+        "walk_collect",
+        62,
+        320
       ]
     ],
     "highest_complexity": [
-      [
-        "render_html",
-        56,
-        3029
-      ],
-      [
-        "render_text",
-        45,
-        2525
-      ],
-      [
-        "audit_path",
-        41,
-        2228
-      ],
-      [
-        "render_md",
-        33,
-        2681
-      ],
       [
         "lex_regions",
         29,
@@ -82,39 +62,39 @@
       [
         "main",
         23,
-        3336
+        3487
       ],
       [
         "walk_collect",
         22,
         320
+      ],
+      [
+        "_text_snapshot",
+        18,
+        2553
+      ],
+      [
+        "_regex_sample",
+        17,
+        1565
+      ],
+      [
+        "_collect_dir_targets",
+        17,
+        2275
+      ],
+      [
+        "classify_file",
+        16,
+        1654
       ]
     ],
     "funcs_over_100_lines": [
       [
-        "render_html",
-        303,
-        3029
-      ],
-      [
-        "audit_path",
-        158,
-        2228
-      ],
-      [
-        "render_md",
-        150,
-        2681
-      ],
-      [
-        "render_text",
-        141,
-        2525
-      ],
-      [
         "main",
         141,
-        3336
+        3487
       ],
       [
         "lex_regions",
@@ -124,26 +104,6 @@
     ],
     "funcs_over_cx20": [
       [
-        "render_html",
-        56,
-        3029
-      ],
-      [
-        "render_text",
-        45,
-        2525
-      ],
-      [
-        "audit_path",
-        41,
-        2228
-      ],
-      [
-        "render_md",
-        33,
-        2681
-      ],
-      [
         "lex_regions",
         29,
         724
@@ -156,7 +116,7 @@
       [
         "main",
         23,
-        3336
+        3487
       ],
       [
         "walk_collect",
@@ -301,5 +261,105 @@
       ]
     },
     "missing_categories": []
-  }
+  },
+  "gate": [
+    {
+      "name": "结论可信度",
+      "items": [
+        [
+          "关联度弱时不使用「阻断级」措辞",
+          true,
+          "detect_chains 里按关联度降级"
+        ],
+        [
+          "报告声明「组合证据 ≠ 数据流」",
+          true,
+          "render_text / render_html 的说明框"
+        ],
+        [
+          "强度条标注它不是概率",
+          true,
+          "能力表表头/图例"
+        ],
+        [
+          "覆盖台账区分「读到」与「真正跑正则」",
+          true,
+          "coverage 字段"
+        ]
+      ],
+      "passed": 4,
+      "total": 4
+    },
+    {
+      "name": "测试可信度",
+      "items": [
+        [
+          "变异测试断言能捕捉基础变异退化",
+          true,
+          "check_mutation_corpus 的分层断言"
+        ],
+        [
+          "近负样本有期望表（不只是「没吓到人」）",
+          true,
+          "check_near_negative 的 EXPECT / KNOWN_GAPS"
+        ],
+        [
+          "验收项覆盖 ≥ 8 类",
+          true,
+          "verify.py 的 record 调用数=14"
+        ]
+      ],
+      "passed": 3,
+      "total": 3
+    },
+    {
+      "name": "覆盖透明度",
+      "items": [
+        [
+          "预筛拒绝的文件有独立计数",
+          true,
+          "audit_path"
+        ],
+        [
+          "未被识别的扩展名有独立计数",
+          true,
+          "audit_path"
+        ],
+        [
+          "所有 skip 分支都计入 gaps 或明确归类为设计内",
+          true,
+          "audit_targets"
+        ],
+        [
+          "结论在缺口过大时降级",
+          true,
+          "summarize_capabilities"
+        ]
+      ],
+      "passed": 4,
+      "total": 4
+    },
+    {
+      "name": "代码结构",
+      "items": [
+        [
+          "无函数超过 150 行",
+          true,
+          "超标：无"
+        ],
+        [
+          "无函数圈复杂度超过 30",
+          true,
+          "超标：无"
+        ],
+        [
+          "渲染器已按职责拆分（不是单个大函数）",
+          true,
+          "拆分出的 _html_* 函数数=15"
+        ]
+      ],
+      "passed": 3,
+      "total": 3
+    }
+  ]
 }

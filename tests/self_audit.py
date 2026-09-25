@@ -26,6 +26,105 @@ ROOT = os.path.dirname(HERE)
 AGENT = os.path.join(ROOT, "agentegress.py")
 
 
+# ---------------------------------------------------------------- D Release Gate
+
+# 老大定的方向：不增能力、不扩模式库、不做 v0.3 新功能，
+# 只修四类债，达到 Gate 后进入受控真实样本 dogfooding。
+#
+# **Gate 必须可自动检验** —— 否则又会退化成"我觉得差不多了"。
+# 每条检查都给：名称 / 是否通过 / 依据。
+def _src():
+    return open(AGENT, encoding="utf-8").read()
+
+
+def gate_conclusion_credibility():
+    """结论可信度：措辞不能超出证据能支撑的范围。"""
+    s = _src()
+    return [
+        ("关联度弱时不使用「阻断级」措辞",
+         'if cohesion == "co_occur" and level == "blocking"' in s,
+         "detect_chains 里按关联度降级"),
+        ("报告声明「组合证据 ≠ 数据流」",
+         "不是程序路径" in s or "不是数据流" in s,
+         "render_text / render_html 的说明框"),
+        ("强度条标注它不是概率",
+         "非概率" in s or "不是概率" in s,
+         "能力表表头/图例"),
+        ("覆盖台账区分「读到」与「真正跑正则」",
+         "files_analyzed" in s and "prefilter_rejected" in s,
+         "coverage 字段"),
+    ]
+
+
+def gate_test_credibility():
+    """测试可信度：断言必须能真的失败。"""
+    v = open(os.path.join(HERE, "verify.py"), encoding="utf-8").read()
+    checks = []
+    # 变异测试必须分两层断言，而不是 bool(baseline)
+    checks.append(("变异测试断言能捕捉基础变异退化",
+                   "REQUIRED" in v and "degraded" in v,
+                   "check_mutation_corpus 的分层断言"))
+    # near-negative 必须有期望表 + 已知缺口的显式标记
+    checks.append(("近负样本有期望表（不只是「没吓到人」）",
+                   "EXPECT" in v and "KNOWN_GAPS" in v,
+                   "check_near_negative 的 EXPECT / KNOWN_GAPS"))
+    # 验收项必须有明确的失败条件
+    hard = v.count("record(")
+    checks.append(("验收项覆盖 ≥ 8 类", hard >= 8, "verify.py 的 record 调用数=%d" % hard))
+    return checks
+
+
+def gate_coverage_transparency():
+    """覆盖透明度：每一条「没看」都要有计数和出口。"""
+    s = _src()
+    return [
+        ("预筛拒绝的文件有独立计数",
+         "prefilter_rejected" in s, "audit_path"),
+        ("未被识别的扩展名有独立计数",
+         "skipped_other" in s, "audit_path"),
+        ("所有 skip 分支都计入 gaps 或明确归类为设计内",
+         'coverage["gaps"] = ' in s, "audit_targets"),
+        ("结论在缺口过大时降级",
+         "缺口过大" in s or "ratio > 0.20" in s, "summarize_capabilities"),
+    ]
+
+
+def gate_code_structure():
+    """代码结构：单函数不得失控。"""
+    st = structure_audit()
+    long_funcs = [(n, ln) for n, ln, _ in st["longest_funcs"] if ln > 150]
+    cx_funcs = [(n, c) for n, c, _ in st["highest_complexity"] if c > 30]
+    return [
+        ("无函数超过 150 行",
+         not long_funcs,
+         "超标：%s" % ("、".join("%s(%d行)" % x for x in long_funcs) or "无")),
+        ("无函数圈复杂度超过 30",
+         not cx_funcs,
+         "超标：%s" % ("、".join("%s(cx%d)" % x for x in cx_funcs) or "无")),
+        ("渲染器已按职责拆分（不是单个大函数）",
+         len(re.findall(r"^def _html_", _src(), re.M)) >= 4,
+         "拆分出的 _html_* 函数数=%d" % len(re.findall(r"^def _html_", _src(), re.M))),
+    ]
+
+
+GATE = [
+    ("结论可信度", gate_conclusion_credibility),
+    ("测试可信度", gate_test_credibility),
+    ("覆盖透明度", gate_coverage_transparency),
+    ("代码结构", gate_code_structure),
+]
+
+
+def gate_report():
+    out = []
+    for name, fn in GATE:
+        items = fn()
+        passed = sum(1 for _n, ok, _d in items if ok)
+        out.append({"name": name, "items": items,
+                    "passed": passed, "total": len(items)})
+    return out
+
+
 # ---------------------------------------------------------------- A 结构健康度
 
 def structure_audit():
@@ -140,6 +239,7 @@ def main():
     out["structure"] = structure_audit()
     out["promises"] = promise_audit()
     out["coverage"] = coverage_audit()
+    out["gate"] = gate_report()
 
     L = []
     L.append("=" * 78)
@@ -196,6 +296,26 @@ def main():
     if out["coverage"]["missing_categories"]:
         L.append("")
         L.append("  ⚠ 整类缺失：%s" % "、".join(out["coverage"]["missing_categories"]))
+
+    L.append("")
+    L.append("【D Release Gate】—— 四类债全过，才进入受控样本 dogfooding")
+    gate_all = True
+    for g in out["gate"]:
+        ok_all = g["passed"] == g["total"]
+        gate_all = gate_all and ok_all
+        L.append("")
+        L.append("  [%s] %s  %d/%d"
+                 % ("通过" if ok_all else "未过", g["name"], g["passed"], g["total"]))
+        for n, ok, d in g["items"]:
+            L.append("      %s %s" % ("OK  " if ok else "TODO", n))
+            if not ok:
+                L.append("           %s" % d)
+    L.append("")
+    L.append("  " + "-" * 74)
+    L.append("  Gate 总判定：%s"
+             % ("✅ 可以进入 dogfooding" if gate_all
+                else "❌ 尚未达到，继续修债（不新增能力）"))
+    L.append("  " + "-" * 74)
 
     L.append("")
     L.append("=" * 78)

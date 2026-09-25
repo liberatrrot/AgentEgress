@@ -30,12 +30,16 @@
 
 | # | 项 | 为什么值得 | 成本 |
 |---|---|---|---|
+| B0 | **`object_storage_upload` 在「用户主动导出 + 用户自配桶」场景下仍判 `likely`** | 近负样本期望表抓到的**真实误报**。同一段代码，传到"用户自己的桶"和"厂商的桶"字符串完全一样。已在 `tests/verify.py` 的 `KNOWN_GAPS` 里标记为 xfail | 大（需目的地归属分析） |
 | B1 | **拆分 `render_html`**（295 行 / 圈复杂度 55） | 四个渲染器里最重的；单一函数无法单测、无法复用。**结构债里唯一确定该还的** | 中 |
 | B2 | `near-negative` 加期望表（expected findings/severity/chain） | 现在只测"没吓到用户"，不测"报告是否符合预期" | 中 |
 | B3 | archive bomb 补全（max archive bytes / max total parse time） | 现在只有 header 上限，红队说得对：目录树上限 ≠ 完整资源边界 | 小 |
 | B4 | `_cohesion` 在打包目标上禁用 `same_file` | ZCode 主进程压成一个 bundle，"任何两能力都同文件"→ 判据退化 | 小 |
 | B5 | 模式库加 `updated_at` / 版本号 | 现在所有依赖项都是无日期常量，"未检出"的保质期无法回答 | 小 |
 | B6 | 动态代码检测（eval / new Function / 字符串拼接） | **不必做检测，只需标注**："检测到动态构造，静态置信度下降" | 小 |
+
+> **已完成（见"还技术债"轮的记录）**：B1 拆 render_html / B2 near-negative 期望表 /
+> audit_path + render_text + render_md 拆分。Gate 的"代码结构"已 3/3 通过。
 
 ## C. 明确不做（附理由，避免反复讨论）
 

@@ -2225,131 +2225,114 @@ def summarize_capabilities(caps, coverage=None):
     }
 
 
-def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024, acc=None,
-               include_vendor=False):
-    """审计一个路径（目录或 asar 文件）。
+def _collect_asar_targets(path, meta, targets, include_vendor, max_file_bytes):
+    """枚举 asar 归档里的可扫条目，填进 targets。"""
+    try:
+        ar = AsarArchive(path)
+    except (AsarError, OSError) as e:
+        meta["errors"].append("asar 打开失败：%s" % e)
+        return
+    try:
+        meta["asar"] = {"tree_entries": sum(1 for _ in ar.iter_files())}
+        for rel, item in ar.iter_files():
+            if len(targets) >= 60000:
+                meta["truncated"] = True
+                meta["errors"].append("归档可扫文件数超过 60000，已截断")
+                break
+            # 注意判定顺序：.map / .min.css 不在 _LANG_BY_EXT 里，
+            # 若先查 detect_lang 就会在 `lang == "other"` 处 continue，
+            # 永远到不了下面这个分支（评审实测：三个扩展名里只有 .min.js 能触发）。
+            artifact = rel.endswith((".map", ".min.js", ".min.css"))
+            lang = detect_lang(rel)
+            if lang in ("other",) and not artifact:
+                meta["skipped_other"] += 1
+                continue
+            meta["candidates"] += 1
+            if artifact:
+                meta["skipped_ext"] += 1
+                continue
+            if not include_vendor and any(v in _norm(rel) for v in M3_VENDOR_PARTS):
+                meta["skipped_vendor"] += 1
+                continue
+            try:
+                size = int(item.get("size", 0) or 0)
+            except (TypeError, ValueError):
+                meta["skipped_bad_entry"] += 1
+                continue
+            if size > max_file_bytes:
+                meta["skipped_large"] += 1
+                continue
+            targets.append((rel, lang, ("asar", ar, rel, item)))
+    except AsarError as e:
+        meta["errors"].append("归档目录树异常，停止枚举：%s" % e)
+    except RecursionError:
+        meta["errors"].append("归档目录树嵌套过深，停止枚举")
+    except Exception as e:                      # noqa: BLE001
+        # 对不可信输入保留宽捕获。记录类型名，便于区分「恶意构造」与「自身 bug」。
+        meta["errors"].append("归档枚举异常（%s）：%s" % (type(e).__name__, e))
 
-    acc 不为 None 时，命中直接喂给累加器，函数本身不累积命中列表——
-    这是大目标（几万个文件）的内存友好路径。返回值里的 hits 此时为空。
 
-    include_vendor=False（默认）会跳过 node_modules / vendor 等第三方依赖区，
-    理由见 M3_VENDOR_PARTS 的注释。
-    """
-    hits = []
-    meta = {"path": path, "kind": "dir", "files_scanned": 0, "bytes_scanned": 0,
-            "files_analyzed": 0, "prefilter_rejected": 0,
-            "candidates": 0, "skipped_large": 0, "skipped_vendor": 0,
-            "skipped_ext": 0, "skipped_bad_entry": 0, "skipped_other": 0,
-            "truncated": False, "errors": [], "asar": None}
-
-    targets = []   # (rel_path, lang, reader)
-
-    if os.path.isfile(path) and path.lower().endswith(".asar"):
-        meta["kind"] = "asar"
+def _collect_dir_targets(path, meta, targets, max_files, max_file_bytes, include_vendor):
+    """遍历目录，收集可扫文件进 targets。"""
+    stack = [path]
+    truncated = False
+    while stack:
+        if len(targets) >= max_files:
+            truncated = True
+            break
+        d = stack.pop()
         try:
-            ar = AsarArchive(path)
-        except (AsarError, OSError) as e:
-            meta["errors"].append("asar 打开失败：%s" % e)
-            return hits, meta
-        try:
-            meta["asar"] = {"tree_entries": sum(1 for _ in ar.iter_files())}
-            for rel, item in ar.iter_files():
-                if len(targets) >= 60000:
-                    meta["truncated"] = True
-                    meta["errors"].append("归档可扫文件数超过 60000，已截断")
-                    break
-                # 注意判定顺序：.map / .min.css 不在 _LANG_BY_EXT 里，
-                # 若先查 detect_lang 就会在 `lang == "other"` 处 continue，
-                # 永远到不了下面这个分支（评审实测：三个扩展名里只有 .min.js 能触发）。
-                artifact = rel.endswith((".map", ".min.js", ".min.css"))
-                lang = detect_lang(rel)
-                if lang in ("other",) and not artifact:
-                    meta["skipped_other"] += 1
-                    continue
-                meta["candidates"] += 1
-                if artifact:
-                    meta["skipped_ext"] += 1
-                    continue
-                if not include_vendor and any(v in _norm(rel) for v in M3_VENDOR_PARTS):
-                    meta["skipped_vendor"] += 1
-                    continue
-                try:
-                    size = int(item.get("size", 0) or 0)
-                except (TypeError, ValueError):
-                    meta["skipped_bad_entry"] += 1
-                    continue
-                if size > max_file_bytes:
-                    meta["skipped_large"] += 1
-                    continue
-                targets.append((rel, lang, ("asar", ar, rel, item)))
-        except AsarError as e:
-            meta["errors"].append("归档目录树异常，停止枚举：%s" % e)
-        except RecursionError:
-            meta["errors"].append("归档目录树嵌套过深，停止枚举")
-        except Exception as e:                      # noqa: BLE001
-            # 对不可信输入保留宽捕获。记录类型名，便于区分「恶意构造」与「自身 bug」。
-            meta["errors"].append("归档枚举异常（%s）：%s" % (type(e).__name__, e))
-    elif os.path.isdir(path):
-        stack = [path]
-        truncated = False
-        while stack:
+            # 排序保证扫描顺序可复现（否则「哪 2500 个被扫」依赖文件系统返回顺序，
+            # 同一台机器两次运行都可能不同）
+            entries = sorted(os.scandir(d), key=lambda x: x.name)
+        except OSError as e:
+            meta["errors"].append(str(e))
+            continue
+        for e in entries:
             if len(targets) >= max_files:
                 truncated = True
                 break
-            d = stack.pop()
             try:
-                # 排序保证扫描顺序可复现（否则「哪 2500 个被扫」依赖文件系统返回顺序，
-                # 同一台机器两次运行都可能不同）
-                entries = sorted(os.scandir(d), key=lambda x: x.name)
-            except OSError as e:
-                meta["errors"].append(str(e))
+                if e.is_dir(follow_symlinks=False):
+                    if e.name in M3_SKIP_DIRS:
+                        continue
+                    stack.append(e.path)
+                elif e.is_file(follow_symlinks=False):
+                    rel = os.path.relpath(e.path, path)
+                    # 用带前导 / 的规范形态去匹配，与 asar 分支（/node_modules/...）一致。
+                    # 【坑】原先用 _norm(rel)（形如 vendor/leak.js）匹配 M3_VENDOR_PARTS 里的
+                    # /vendor/ —— 永远匹配不上。也就是说「目录目标跳过第三方依赖」是**空转**，
+                    # 只有 asar 分支真正生效（评审实测：目录目标 skipped_vendor=0）。
+                    rel_norm = "/" + _norm(rel)
+                    artifact = e.name.endswith((".map", ".min.js", ".min.css"))
+                    lang = detect_lang(e.path)
+                    if lang in ("other",) and not artifact:
+                        # 不是「没有这个文件」，而是「有这个文件但按扩展名没看」。
+                        # 必须计数，否则候选数与实扫数对不上，读者会以为扫全了。
+                        meta["skipped_other"] += 1
+                        continue
+                    meta["candidates"] += 1
+                    if artifact:
+                        meta["skipped_ext"] += 1
+                        continue
+                    if not include_vendor and any(v in rel_norm for v in M3_VENDOR_PARTS):
+                        meta["skipped_vendor"] += 1
+                        continue
+                    sz = e.stat(follow_symlinks=False).st_size
+                    if sz > max_file_bytes:
+                        meta["skipped_large"] += 1
+                        continue
+                    targets.append((rel, lang, ("fs", e.path, None, None)))
+            except OSError:
                 continue
-            for e in entries:
-                if len(targets) >= max_files:
-                    truncated = True
-                    break
-                try:
-                    if e.is_dir(follow_symlinks=False):
-                        if e.name in M3_SKIP_DIRS:
-                            continue
-                        stack.append(e.path)
-                    elif e.is_file(follow_symlinks=False):
-                        rel = os.path.relpath(e.path, path)
-                        # 用带前导 / 的规范形态去匹配，与 asar 分支（/node_modules/...）一致。
-                        # 【坑】原先用 _norm(rel)（形如 vendor/leak.js）匹配 M3_VENDOR_PARTS 里的
-                        # /vendor/ —— 永远匹配不上。也就是说「目录目标跳过第三方依赖」是**空转**，
-                        # 只有 asar 分支真正生效（评审实测：目录目标 skipped_vendor=0）。
-                        rel_norm = "/" + _norm(rel)
-                        # 判定顺序见 asar 分支的同名注释：.map / .min.css 不在
-                        # _LANG_BY_EXT 里，必须先判 artifact 再判 lang。
-                        artifact = e.name.endswith((".map", ".min.js", ".min.css"))
-                        lang = detect_lang(e.path)
-                        if lang in ("other",) and not artifact:
-                            # 不是「没有这个文件」，而是「有这个文件但按扩展名没看」。
-                            # 必须计数，否则候选数与实扫数对不上，读者会以为扫全了。
-                            meta["skipped_other"] += 1
-                            continue
-                        meta["candidates"] += 1
-                        if artifact:
-                            meta["skipped_ext"] += 1
-                            continue
-                        if not include_vendor and any(v in rel_norm for v in M3_VENDOR_PARTS):
-                            meta["skipped_vendor"] += 1
-                            continue
-                        sz = e.stat(follow_symlinks=False).st_size
-                        if sz > max_file_bytes:
-                            meta["skipped_large"] += 1
-                            continue
-                        targets.append((rel, lang, ("fs", e.path, None, None)))
-                except OSError:
-                    continue
-        if truncated:
-            meta["truncated"] = True
-            meta["errors"].append("达到 max_files=%d 上限，剩余文件未扫描" % max_files)
-    else:
-        meta["errors"].append("路径不存在")
-        return hits, meta
+    if truncated:
+        meta["truncated"] = True
+        meta["errors"].append("达到 max_files=%d 上限，剩余文件未扫描" % max_files)
 
+
+def _scan_targets(targets, meta, max_file_bytes, acc=None):
+    """读取并扫描 targets；返回命中列表（acc 不为空时返回空，命中已直接入累加器）。"""
+    hits = []
     for rel, lang, reader in targets:
         try:
             if reader[0] == "asar":
@@ -2381,7 +2364,40 @@ def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024, acc=None,
                 hits.extend(file_hits)
             else:
                 acc.add(file_hits)
+    return hits
 
+
+def audit_path(path, max_files=2500, max_file_bytes=8 * 1024 * 1024, acc=None,
+               include_vendor=False):
+    """审计一个路径（目录或 asar 文件）。
+
+    acc 不为 None 时，命中直接喂给累加器，函数本身不累积命中列表——
+    这是大目标（几万个文件）的内存友好路径。返回值里的 hits 此时为空。
+
+    include_vendor=False（默认）会跳过 node_modules / vendor 等第三方依赖区，
+    理由见 M3_VENDOR_PARTS 的注释。
+
+    实现拆成三步（见上方三个 _collect_* / _scan_* 函数）：
+    asar 枚举 / 目录遍历 / 读取扫描。拆开是为了让每一段可单独读、可单独测。
+    """
+    meta = {"path": path, "kind": "dir", "files_scanned": 0, "bytes_scanned": 0,
+            "files_analyzed": 0, "prefilter_rejected": 0,
+            "candidates": 0, "skipped_large": 0, "skipped_vendor": 0,
+            "skipped_ext": 0, "skipped_bad_entry": 0, "skipped_other": 0,
+            "truncated": False, "errors": [], "asar": None}
+    targets = []   # (rel_path, lang, reader)
+
+    if os.path.isfile(path) and path.lower().endswith(".asar"):
+        meta["kind"] = "asar"
+        _collect_asar_targets(path, meta, targets, include_vendor, max_file_bytes)
+    elif os.path.isdir(path):
+        _collect_dir_targets(path, meta, targets, max_files, max_file_bytes,
+                             include_vendor)
+    else:
+        meta["errors"].append("路径不存在")
+        return [], meta
+
+    hits = _scan_targets(targets, meta, max_file_bytes, acc=acc)
     return hits, meta
 
 
@@ -2522,146 +2538,186 @@ LEVEL_MARK = {
 }
 
 
-def render_text(results, meta):
-    L = []
-    L.append("=" * 72)
-    L.append("AgentEgress %s  AI 客户端数据外传审计报告" % VERSION)
-    L.append("扫描时间: %s" % meta["time"])
-    L.append("只读扫描 / 零依赖 / 不联网 / 不外传")
-    L.append("=" * 72)
-    L.append("")
-    L.append("-- 摘要 " + "-" * 60)
-    L.append("%-10s %-24s %-12s %s" % ("工具", "名称", "风险", "数据目录"))
+def _text_summary_table(results):
+    """摘要表（所有工具一行）。"""
+    L = ["-- 摘要 " + "-" * 60,
+         "%-10s %-24s %-12s %s" % ("工具", "名称", "风险", "数据目录")]
     for r in results:
         L.append("%-10s %-24s %-12s %s" % (
             r["report"]["id"], r["report"]["name"],
-            LEVEL_MARK.get(r["level"], r["level"]), human(r["report"]["total_bytes"])))
-    L.append("")
+            LEVEL_MARK.get(r["level"], r["level"]),
+            human(r["report"]["total_bytes"])))
+    return L
 
-    for r in results:
-        t = r["report"]
-        if not t["installed"]:
+
+def _text_snapshot(s):
+    """单个快照状态块。"""
+    L = ["  [快照状态] %s" % s["state_file"],
+         "    工作区      : %s" % (s["workspace"] or "(未记录)"),
+         "    上传失败计数: %s" % s["failure_count"]]
+    if s["workspace_bytes"] is not None:
+        L.append("    最近打包    : %s  ->  加密后 %s"
+                 % (human(s["workspace_bytes"]), human(s["encrypted_bytes"] or 0)))
+    if s["manifests"]:
+        L.append("    打包清单:")
+        for m in s["manifests"]:
+            L.append("      %s  %d 个文件 / %s"
+                     % (m["schema"] or "-", m["file_count"], human(m["bytes"])))
+            for e in m["entries"][:8]:
+                L.append("        %-10s %s" % (human(int(e["size"] or 0)), e["path"]))
+            if len(m["entries"]) > 8:
+                L.append("        ... 其余 %d 项" % (len(m["entries"]) - 8))
+    if s["extra_manifests"]:
+        L.append("    跨工作区全局配置:")
+        for x in s["extra_manifests"]:
+            for e in x["entries"]:
+                L.append("      %-34s %-8s %s"
+                         % (os.path.basename(str(e["path"])),
+                            human(int(e["size"] or 0)), e["source"]))
+    if s["pending"]:
+        L.append("    未发出的包:")
+        for p in s["pending"]:
+            L.append("      %-10s %s" % (human(p["size"]), p["path"]))
+    if s["git_in_manifest"]:
+        L.append("    !!! 清单含 .git 内部文件 %d 项，示例:" % len(s["git_in_manifest"]))
+        for g in s["git_in_manifest"][:5]:
+            L.append("        %s" % g)
+    return L
+
+
+def _text_coverage(cov):
+    """覆盖台账（纯文本版）。"""
+    L = ["    覆盖台账: 候选 %d -> 读到 %d -> 真正跑正则 %d"
+         % (cov.get("candidates", 0), cov.get("scanned", 0), cov.get("analyzed", 0)),
+         "      设计内跳过: 第三方依赖 %d / 压缩产物 %d / 未知扩展名 %d"
+         % (cov.get("skipped_vendor", 0), cov.get("skipped_ext", 0),
+            cov.get("skipped_other", 0))]
+    if cov.get("prefilter_rejected"):
+        L.append("      关键词预筛未通过 %d 个（未跑正则；这是设计内的快速通道，"
+                 "但意味着它们只做了字面量检查）" % cov["prefilter_rejected"])
+    if cov.get("gaps"):
+        L.append("    !! 因技术原因未覆盖 %d 项：大文件 %d / 目录截断 %s / 读取失败 %d"
+                 % (cov["gaps"], cov.get("skipped_large", 0),
+                    "是" if cov.get("truncated") else "否",
+                    cov.get("read_errors", 0)))
+        L.append("       以上缺口意味着「未检出」≠「已排除」，请结合覆盖台账理解结论")
+    else:
+        L.append("    因技术原因未覆盖: 0 项")
+    return L
+
+
+def _text_chains(chains):
+    """组合证据（纯文本版）。
+
+    **不是数据流链** —— 措辞必须让读者看出这个区别：
+    共现检测能回答「构成某个故事的证据是否齐备」，
+    但不能回答「它们是否在同一条可达路径上」。
+    """
+    L = ["    [组合证据] 构成某些故事所需的几类证据同时存在：",
+         "      ※ 本项是「证据共现」检测，不是程序路径/数据流分析。",
+         "        共现 ≠ 在同一条可达路径上，请结合「关联度」自行判断。"]
+    for ch in chains[:5]:
+        mark = "[阻断级]" if ch["level"] == "blocking" else "[严重]  "
+        L.append("      %s %s" % (mark, ch["name"]))
+        L.append("         关联度: %s" % ch.get("cohesion_label", ""))
+        if ch.get("same_files"):
+            L.append("         共有文件: %s" % "、".join(ch["same_files"]))
+        L.append("         证据: %s" % " + ".join(
+            "%s(%s/%d处)" % (e["name"], e["level"], e["hits"])
+            for e in ch["evidence"]))
+        if ch["auto_trigger"]:
+            L.append("         触发: 组合中存在「自动触发」的能力（性质不同于用户主动）")
+    return L
+
+
+def _text_static(st):
+    """M3 完整块（纯文本版）。"""
+    sm = st["summary"]
+    L = ["  [外传能力画像 · M3] %s" % sm["text"],
+         "    扫描 %d 个文件 / %s  |  已确认 %d / 疑似 %d / 弱信号 %d"
+         % (st["files_scanned"], human(st["bytes_scanned"]),
+            sm["confirmed"], sm["likely"], sm["possible"])]
+    cov = st.get("coverage") or {}
+    if cov:
+        L += _text_coverage(cov)
+    chains = st.get("chains") or []
+    if chains:
+        L += _text_chains(chains)
+
+    tmap = {"automatic": "自动", "user_initiated": "用户主动",
+            "mixed": "混合", "unknown": "未判定"}
+    for c in st["capabilities"]:
+        if c["level"] == "absent":
             continue
-        L.append("-- %s (%s) " % (t["name"], t["vendor"]) + "-" * 40)
-        L.append("  风险等级: %s" % LEVEL_MARK.get(r["level"], r["level"]))
-        for why in r["reasons"]:
-            L.append("    - %s" % why)
-        L.append("  数据目录:")
-        for root in t["roots"]:
-            extra = ""
-            if root.get("excluded_bytes"):
-                extra = "   [携带区 %s 已排除]" % human(root["excluded_bytes"])
-            L.append("    %s   (%d 文件 / %s)%s"
-                     % (root["path"], root["files"], human(root["bytes"]), extra))
-        if t.get("endpoints"):
-            L.append("  已知出站端点: %s" % ", ".join(t["endpoints"]))
-        if t.get("switches"):
-            L.append("  已知开关语义:")
-            for s in t["switches"]:
-                L.append("    %s" % s["key"])
-                L.append("      声称: %s" % s["claimed"])
-                L.append("      实际: %s" % s["actual"])
-        if t["suspicious_files"]:
-            L.append("  可疑文件 (前 10):")
-            for f in sorted(t["suspicious_files"], key=lambda x: -x["size"])[:10]:
-                L.append("    %-10s [%s] %s" % (human(f["size"]), f.get("why", "-"), f["path"]))
-        elif t["installed"]:
-            L.append("  可疑文件: 无")
-        for s in r["snapshots"]:
-            L.append("  [快照状态] %s" % s["state_file"])
-            L.append("    工作区      : %s" % (s["workspace"] or "(未记录)"))
-            L.append("    上传失败计数: %s" % s["failure_count"])
-            if s["workspace_bytes"] is not None:
-                L.append("    最近打包    : %s  ->  加密后 %s"
-                         % (human(s["workspace_bytes"]), human(s["encrypted_bytes"] or 0)))
-            if s["manifests"]:
-                L.append("    打包清单:")
-                for m in s["manifests"]:
-                    L.append("      %s  %d 个文件 / %s"
-                             % (m["schema"] or "-", m["file_count"], human(m["bytes"])))
-                    for e in m["entries"][:8]:
-                        L.append("        %-10s %s" % (human(int(e["size"] or 0)), e["path"]))
-                    if len(m["entries"]) > 8:
-                        L.append("        ... 其余 %d 项" % (len(m["entries"]) - 8))
-            if s["extra_manifests"]:
-                L.append("    跨工作区全局配置:")
-                for x in s["extra_manifests"]:
-                    for e in x["entries"]:
-                        L.append("      %-34s %-8s %s"
-                                 % (os.path.basename(str(e["path"])), human(int(e["size"] or 0)), e["source"]))
-            if s["pending"]:
-                L.append("    未发出的包:")
-                for p in s["pending"]:
-                    L.append("      %-10s %s" % (human(p["size"]), p["path"]))
-            if s["git_in_manifest"]:
-                L.append("    !!! 清单含 .git 内部文件 %d 项，示例:" % len(s["git_in_manifest"]))
-                for g in s["git_in_manifest"][:5]:
-                    L.append("        %s" % g)
+        L.append("    %-11s %-26s 模式%-2d 文件%-3d 命中%-4d 触发:%s"
+                 % ("[" + c["level"].upper() + "]", c["name"], c["pattern_count"],
+                    c["file_count"], c.get("hit_total", 0),
+                    tmap.get(c["trigger_hint"]["verdict"], "?")))
+    absents = [c["name"] for c in st["capabilities"] if c["level"] == "absent"]
+    if absents:
+        L.append("    未检出: %s" % "、".join(absents))
+    return L
 
-        st = r.get("static")
-        if st and st.get("files_scanned"):
-            sm = st["summary"]
-            L.append("  [外传能力画像 · M3] %s" % sm["text"])
-            L.append("    扫描 %d 个文件 / %s  |  已确认 %d / 疑似 %d / 弱信号 %d"
-                     % (st["files_scanned"], human(st["bytes_scanned"]),
-                        sm["confirmed"], sm["likely"], sm["possible"]))
-            cov = st.get("coverage") or {}
-            if cov:
-                L.append("    覆盖台账: 候选 %d -> 读到 %d -> 真正跑正则 %d"
-                         % (cov.get("candidates", 0), cov.get("scanned", 0),
-                            cov.get("analyzed", 0)))
-                L.append("      设计内跳过: 第三方依赖 %d / 压缩产物 %d / 未知扩展名 %d"
-                         % (cov.get("skipped_vendor", 0), cov.get("skipped_ext", 0),
-                            cov.get("skipped_other", 0)))
-                if cov.get("prefilter_rejected"):
-                    L.append("      关键词预筛未通过 %d 个（未跑正则；这是设计内的快速通道，"
-                             "但意味着它们只做了字面量检查）" % cov["prefilter_rejected"])
-                if cov.get("gaps"):
-                    L.append("    !! 因技术原因未覆盖 %d 项：大文件 %d / 目录截断 %s / 读取失败 %d"
-                             % (cov["gaps"], cov.get("skipped_large", 0),
-                                "是" if cov.get("truncated") else "否",
-                                cov.get("read_errors", 0)))
-                    L.append("       以上缺口意味着「未检出」≠「已排除」，请结合覆盖台账理解结论")
-                else:
-                    L.append("    因技术原因未覆盖: 0 项")
 
-            # 组合证据：**不是**数据流链。措辞必须让读者看出这个区别——
-            # 共现检测能回答「构成某个故事的证据是否齐备」，
-            # 但不能回答「它们是否在同一条可达路径上」。
-            chains = st.get("chains") or []
-            if chains:
-                L.append("    [组合证据] 构成某些故事所需的几类证据同时存在：")
-                L.append("      ※ 本项是「证据共现」检测，不是程序路径/数据流分析。")
-                L.append("        共现 ≠ 在同一条可达路径上，请结合「关联度」自行判断。")
-                for ch in chains[:5]:
-                    mark = "[阻断级]" if ch["level"] == "blocking" else "[严重]  "
-                    L.append("      %s %s" % (mark, ch["name"]))
-                    L.append("         关联度: %s" % ch.get("cohesion_label", ""))
-                    if ch.get("same_files"):
-                        L.append("         共有文件: %s" % "、".join(ch["same_files"]))
-                    L.append("         证据: %s" % " + ".join(
-                        "%s(%s/%d处)" % (e["name"], e["level"], e["hits"])
-                        for e in ch["evidence"]))
-                    if ch["auto_trigger"]:
-                        L.append("         触发: 组合中存在「自动触发」的能力（性质不同于用户主动）")
-            tmap = {"automatic": "自动", "user_initiated": "用户主动",
-                    "mixed": "混合", "unknown": "未判定"}
-            for c in st["capabilities"]:
-                if c["level"] == "absent":
-                    continue
-                L.append("    %-11s %-26s 模式%-2d 文件%-3d 命中%-4d 触发:%s"
-                         % ("[" + c["level"].upper() +"]", c["name"], c["pattern_count"],
-                            c["file_count"], c.get("hit_total", 0),
-                            tmap.get(c["trigger_hint"]["verdict"], "?")))
-            absents = [c["name"] for c in st["capabilities"] if c["level"] == "absent"]
-            if absents:
-                L.append("    未检出: %s" % "、".join(absents))
-        L.append("")
+def _text_tool(r):
+    """单个工具块（纯文本版）。"""
+    t = r["report"]
+    L = ["-- %s (%s) " % (t["name"], t["vendor"]) + "-" * 40,
+         "  风险等级: %s" % LEVEL_MARK.get(r["level"], r["level"])]
+    for why in r["reasons"]:
+        L.append("    - %s" % why)
 
-    L.append("=" * 72)
-    L.append("说明：本地取证只能证明「链路被触发过」与「打包了什么」，")
-    L.append("      无法证明「服务端是否已接收/删除」。需要网络层证据才能区分尝试与成功。")
-    L.append("=" * 72)
+    L.append("  数据目录:")
+    for root in t["roots"]:
+        extra = ""
+        if root.get("excluded_bytes"):
+            extra = "   [携带区 %s 已排除]" % human(root["excluded_bytes"])
+        L.append("    %s   (%d 文件 / %s)%s"
+                 % (root["path"], root["files"], human(root["bytes"]), extra))
+
+    if t.get("endpoints"):
+        L.append("  已知出站端点: %s" % ", ".join(t["endpoints"]))
+    if t.get("switches"):
+        L.append("  已知开关语义:")
+        for s in t["switches"]:
+            L.append("    %s" % s["key"])
+            L.append("      声称: %s" % s["claimed"])
+            L.append("      实际: %s" % s["actual"])
+    if t["suspicious_files"]:
+        L.append("  可疑文件 (前 10):")
+        for f in sorted(t["suspicious_files"], key=lambda x: -x["size"])[:10]:
+            L.append("    %-10s [%s] %s"
+                     % (human(f["size"]), f.get("why", "-"), f["path"]))
+    elif t["installed"]:
+        L.append("  可疑文件: 无")
+
+    for s in r["snapshots"]:
+        L += _text_snapshot(s)
+
+    st = r.get("static")
+    if st and st.get("files_scanned"):
+        L += _text_static(st)
+    L.append("")
+    return L
+
+
+def render_text(results, meta):
+    L = ["=" * 72,
+         "AgentEgress %s  AI 客户端数据外传审计报告" % VERSION,
+         "扫描时间: %s" % meta["time"],
+         "只读扫描 / 零依赖 / 不联网 / 不外传",
+         "=" * 72,
+         ""]
+    L += _text_summary_table(results)
+    L.append("")
+    for r in results:
+        if not r["report"]["installed"]:
+            continue
+        L += _text_tool(r)
+    L += ["=" * 72,
+          "说明：本地取证只能证明「链路被触发过」与「打包了什么」，",
+          "      无法证明「服务端是否已接收/删除」。需要网络层证据才能区分尝试与成功。",
+          "=" * 72]
     return "\n".join(L)
 
 
@@ -2678,155 +2734,148 @@ def _md_safe(s, limit=160):
     return s[:limit]
 
 
-def render_md(results, meta):
-    L = []
-    L.append("# AgentEgress 审计报告")
-    L.append("")
-    L.append("- 版本：%s" % VERSION)
-    L.append("- 扫描时间：%s" % meta["time"])
-    L.append("- 性质：只读扫描 / 零依赖 / 不联网 / 不外传")
-    L.append("")
-    L.append("## 摘要")
-    L.append("")
-    L.append("| 工具 | 名称 | 风险 | 数据目录体积 | 快照状态 |")
-    L.append("|---|---|---|---|---|")
+def _md_summary_table(results):
+    """摘要表（Markdown）。"""
+    L = ["## 摘要", "",
+         "| 工具 | 名称 | 风险 | 数据目录体积 | 快照状态 |",
+         "|---|---|---|---|---|"]
     for r in results:
         t = r["report"]
         L.append("| `%s` | %s | %s | %s | %d |" % (
             t["id"], t["name"], LEVEL_MARK.get(r["level"], r["level"]),
             human(t["total_bytes"]), len(r["snapshots"])))
     L.append("")
+    return L
 
+
+def _md_snapshot(s):
+    """单个快照块（Markdown）。"""
+    L = ["### 快照状态 `%s`" % os.path.basename(s["state_file"]), "",
+         "- 文件：`%s`" % s["state_file"],
+         "- 工作区：`%s`" % (s["workspace"] or "(未记录)"),
+         "- 上传失败计数：**%s**" % s["failure_count"]]
+    if s["workspace_bytes"] is not None:
+        L.append("- 最近打包：%s → 加密后 %s"
+                 % (human(s["workspace_bytes"]), human(s["encrypted_bytes"] or 0)))
+    if s["pending"]:
+        L.append("- 未发出的包：%d 个 / %s"
+                 % (len(s["pending"]), human(sum(p["size"] for p in s["pending"]))))
+    L.append("")
+
+    for m in s["manifests"]:
+        L += ["#### 打包清单（%s）" % (m["schema"] or "unknown"), "",
+              "共 **%d** 个文件 / **%s**" % (m["file_count"], human(m["bytes"])), "",
+              "| 大小 | 路径 |", "|---|---|"]
+        for e in m["entries"][:20]:
+            L.append("| %s | `%s` |" % (human(int(e["size"] or 0)), _md_safe(e["path"])))
+        if len(m["entries"]) > 20:
+            L.append("| ... | 其余 %d 项 |" % (len(m["entries"]) - 20))
+        L.append("")
+
+    for x in s["extra_manifests"]:
+        L += ["#### 跨工作区全局配置清单", "", "| 文件 | 大小 | 来源 |", "|---|---|---|"]
+        for e in x["entries"]:
+            L.append("| `%s` | %s | %s |"
+                     % (os.path.basename(str(e["path"])), human(int(e["size"] or 0)),
+                        e["source"]))
+        L.append("")
+
+    if s["git_in_manifest"]:
+        L += ["> **警告**：清单中包含 %d 项 `.git` 内部文件。"
+              % len(s["git_in_manifest"]), ""]
+        for g in s["git_in_manifest"][:10]:
+            L.append("- `%s`" % g)
+        L.append("")
+    return L
+
+
+def _md_static(st):
+    """M3 块（Markdown）。"""
+    sm = st["summary"]
+    L = ["### 外传能力画像（M3 静态审计）", "",
+         "**结论**：%s" % sm["text"], "",
+         "已确认 %d 项 / 疑似 %d 项 / 弱信号 %d 项；扫描 %d 个文件 / %s"
+         % (sm["confirmed"], sm["likely"], sm["possible"],
+            st["files_scanned"], human(st["bytes_scanned"])), "",
+         "> 判定的是**能力**而非**当前行为**——"
+         "删掉触发条件不等于拆掉架构（见 `05-ZCode开源拆解与影响.md`）。", ""]
+
+    tmap = {"automatic": "自动", "user_initiated": "用户主动",
+            "mixed": "混合", "unknown": "未判定"}
+    shown = [c for c in st["capabilities"] if c["level"] != "absent"]
+    if shown:
+        L += ["| 能力 | 等级 | 模式 | 文件 | 命中 | 触发推断 |",
+              "|---|---|---|---|---|---|"]
+        for c in shown:
+            L.append("| %s | %s | %d | %d | %d | %s |"
+                     % (c["name"], LEVEL_MARK.get(c["level"], c["level"]).strip("[]"),
+                        c["pattern_count"], c["file_count"], c.get("hit_total", 0),
+                        tmap.get(c["trigger_hint"]["verdict"], "—")))
+        L.append("")
+        for c in shown:
+            if c["level"] not in ("confirmed", "likely"):
+                continue
+            L += ["<details><summary>%s · 证据链（展示 %d / %d 条）</summary>"
+                  % (c["name"], min(15, len(c["hits"])), c["hit_total"]), ""]
+            for h in c["hits"][:15]:
+                L.append("- `%s:%d` · %s · %s 区 · w=%d"
+                         % (_md_safe(h["file"]), h["line"], h["note"],
+                            h["region"], h["weight"]))
+                L += ["  ```", "  %s" % h["snippet"], "  ```"]
+            L += ["", "</details>", ""]
+
+    absents = [c["name"] for c in st["capabilities"] if c["level"] == "absent"]
+    if absents:
+        L += ["未检出：%s" % "、".join(absents), ""]
+    return L
+
+
+def _md_tool(r):
+    """单个工具块（Markdown）。"""
+    t = r["report"]
+    L = ["## %s（%s）" % (t["name"], t["vendor"]), "",
+         "**风险等级**：%s" % LEVEL_MARK.get(r["level"], r["level"]), ""]
+    if r["reasons"]:
+        L += ["**判定依据**", ""]
+        for why in r["reasons"]:
+            L.append("- %s" % why)
+        L.append("")
+
+    L += ["**数据目录**", ""]
+    for root in t["roots"]:
+        L.append("- `%s` — %d 文件 / %s"
+                 % (root["path"], root["files"], human(root["bytes"])))
+    L.append("")
+
+    if t.get("endpoints"):
+        L += ["**已知出站端点**：%s"
+              % ", ".join("`%s`" % e for e in t["endpoints"]), ""]
+    if t.get("switches"):
+        L += ["**已知开关语义落差**", "", "| 开关 | 声称控制 | 实际控制 |", "|---|---|---|"]
+        for s in t["switches"]:
+            L.append("| `%s` | %s | %s |" % (s["key"], s["claimed"], s["actual"]))
+        L.append("")
+    for s in r["snapshots"]:
+        L += _md_snapshot(s)
+    if r.get("static") and r["static"].get("files_scanned"):
+        L += _md_static(r["static"])
+    return L
+
+
+def render_md(results, meta):
+    L = ["# AgentEgress 审计报告", "",
+         "- 版本：%s" % VERSION,
+         "- 扫描时间：%s" % meta["time"],
+         "- 性质：只读扫描 / 零依赖 / 不联网 / 不外传", ""]
+    L += _md_summary_table(results)
     for r in results:
-        t = r["report"]
-        if not t["installed"]:
+        if not r["report"]["installed"]:
             continue
-        L.append("## %s（%s）" % (t["name"], t["vendor"]))
-        L.append("")
-        L.append("**风险等级**：%s" % LEVEL_MARK.get(r["level"], r["level"]))
-        L.append("")
-        if r["reasons"]:
-            L.append("**判定依据**")
-            L.append("")
-            for why in r["reasons"]:
-                L.append("- %s" % why)
-            L.append("")
-        L.append("**数据目录**")
-        L.append("")
-        for root in t["roots"]:
-            L.append("- `%s` — %d 文件 / %s" % (root["path"], root["files"], human(root["bytes"])))
-        L.append("")
-        if t.get("endpoints"):
-            L.append("**已知出站端点**：%s" % ", ".join("`%s`" % e for e in t["endpoints"]))
-            L.append("")
-        if t.get("switches"):
-            L.append("**已知开关语义落差**")
-            L.append("")
-            L.append("| 开关 | 声称控制 | 实际控制 |")
-            L.append("|---|---|---|")
-            for s in t["switches"]:
-                L.append("| `%s` | %s | %s |" % (s["key"], s["claimed"], s["actual"]))
-            L.append("")
-        for s in r["snapshots"]:
-            L.append("### 快照状态 `%s`" % os.path.basename(s["state_file"]))
-            L.append("")
-            L.append("- 文件：`%s`" % s["state_file"])
-            L.append("- 工作区：`%s`" % (s["workspace"] or "(未记录)"))
-            L.append("- 上传失败计数：**%s**" % s["failure_count"])
-            if s["workspace_bytes"] is not None:
-                L.append("- 最近打包：%s → 加密后 %s"
-                         % (human(s["workspace_bytes"]), human(s["encrypted_bytes"] or 0)))
-            if s["pending"]:
-                L.append("- 未发出的包：%d 个 / %s"
-                         % (len(s["pending"]), human(sum(p["size"] for p in s["pending"]))))
-            L.append("")
-            for m in s["manifests"]:
-                L.append("#### 打包清单（%s）" % (m["schema"] or "unknown"))
-                L.append("")
-                L.append("共 **%d** 个文件 / **%s**" % (m["file_count"], human(m["bytes"])))
-                L.append("")
-                L.append("| 大小 | 路径 |")
-                L.append("|---|---|")
-                for e in m["entries"][:20]:
-                    L.append("| %s | `%s` |" % (human(int(e["size"] or 0)),
-                                                _md_safe(e["path"])))
-                if len(m["entries"]) > 20:
-                    L.append("| ... | 其余 %d 项 |" % (len(m["entries"]) - 20))
-                L.append("")
-            for x in s["extra_manifests"]:
-                L.append("#### 跨工作区全局配置清单")
-                L.append("")
-                L.append("| 文件 | 大小 | 来源 |")
-                L.append("|---|---|---|")
-                for e in x["entries"]:
-                    L.append("| `%s` | %s | %s |"
-                             % (os.path.basename(str(e["path"])), human(int(e["size"] or 0)), e["source"]))
-                L.append("")
-            if s["git_in_manifest"]:
-                L.append("> **警告**：清单中包含 %d 项 `.git` 内部文件。" % len(s["git_in_manifest"]))
-                L.append("")
-                for g in s["git_in_manifest"][:10]:
-                    L.append("- `%s`" % g)
-                L.append("")
-
-        st = r.get("static")
-        if st and st.get("files_scanned"):
-            sm = st["summary"]
-            L.append("### 外传能力画像（M3 静态审计）")
-            L.append("")
-            L.append("**结论**：%s" % sm["text"])
-            L.append("")
-            L.append("已确认 %d 项 / 疑似 %d 项 / 弱信号 %d 项；"
-                     "扫描 %d 个文件 / %s"
-                     % (sm["confirmed"], sm["likely"], sm["possible"],
-                        st["files_scanned"], human(st["bytes_scanned"])))
-            L.append("")
-            L.append("> 判定的是**能力**而非**当前行为**——"
-                     "删掉触发条件不等于拆掉架构（见 `05-ZCode开源拆解与影响.md`）。")
-            L.append("")
-            tmap = {"automatic": "自动", "user_initiated": "用户主动",
-                    "mixed": "混合", "unknown": "未判定"}
-            shown = [c for c in st["capabilities"] if c["level"] != "absent"]
-            if shown:
-                L.append("| 能力 | 等级 | 模式 | 文件 | 命中 | 触发推断 |")
-                L.append("|---|---|---|---|---|---|")
-                for c in shown:
-                    L.append("| %s | %s | %d | %d | %d | %s |"
-                             % (c["name"], LEVEL_MARK.get(c["level"], c["level"]).strip("[]"),
-                                c["pattern_count"], c["file_count"],
-                                c.get("hit_total", 0),
-                                tmap.get(c["trigger_hint"]["verdict"], "—")))
-                L.append("")
-                for c in shown:
-                    if c["level"] not in ("confirmed", "likely"):
-                        continue
-                    L.append("<details><summary>%s · 证据链（展示 %d / %d 条）</summary>"
-                             % (c["name"], min(15, len(c["hits"])), c["hit_total"]))
-                    L.append("")
-                    for h in c["hits"][:15]:
-                        L.append("- `%s:%d` · %s · %s 区 · w=%d"
-                                 % (_md_safe(h["file"]), h["line"], h["note"],
-                                    h["region"], h["weight"]))
-                        L.append("  ```")
-                        L.append("  %s" % h["snippet"])
-                        L.append("  ```")
-                    L.append("")
-                    L.append("</details>")
-                    L.append("")
-            absents = [c["name"] for c in st["capabilities"] if c["level"] == "absent"]
-            if absents:
-                L.append("未检出：%s" % "、".join(absents))
-                L.append("")
-
-    L.append("---")
-    L.append("")
-    L.append("## 取证边界")
-    L.append("")
-    L.append("本地取证能证明：链路被触发过、打包了哪些文件、失败了多少次。")
-    L.append("")
-    L.append("本地取证**不能**证明：服务端是否已接收、是否已删除。")
-    L.append("")
-    L.append("区分「尝试」与「成功」需要网络层证据（连接跟踪 / 抓包 / 网关日志）。")
+        L += _md_tool(r)
+    L += ["---", "", "## 取证边界", "",
+          "本地取证能证明：链路被触发过、打包了哪些文件、失败了多少次。", "",
+          "本地取证**不能**证明：服务端是否已接收、是否已删除。", "",
+          "区分「尝试」与「成功」需要网络层证据（连接跟踪 / 抓包 / 网关日志）。"]
     return "\n".join(L)
 
 
@@ -3026,308 +3075,410 @@ def _bar(level, pattern_count, risk=None):
     return ('<div class="bar"><i style="width:%d%%;background:%s"></i></div>' % (pct, color))
 
 
-def render_html(results, meta):
-    esc = html.escape
-    P = []
-    P.append('<!DOCTYPE html>')
-    P.append('<html lang="zh-CN"><head><meta charset="utf-8">')
-    P.append('<meta name="viewport" content="width=device-width,initial-scale=1">')
-    P.append('<title>AgentEgress 审计报告 · %s</title>' % esc(meta.get("time", "")))
-    P.append('<style>%s</style></head><body><div class="wrap">' % _HTML_STYLE)
+# ---------------------------------------------------------------- HTML 渲染
+#
+# 【为什么拆】原 render_html 是 303 行 / 圈复杂度 56 的单一函数——
+# 无法单测、无法复用，改一处要在 300 行里找位置。
+# 现在按「文档结构」拆成一串小函数，render_html 只负责组装。
+#
+# 拆分是**纯机械的**：每一段原样搬运，不改任何输出。
+# 验证：tests/review/_html_before.html 与重构后的输出逐字节对比，
+# 除时间戳外必须完全一致。
+_esc = html.escape
 
-    P.append('<header>')
-    P.append('<h1>AgentEgress 审计报告</h1>')
-    P.append('<div class="tagline">审「正在用的工具本身」— 只读 / 零依赖 / 不联网 / 不外传</div>')
-    P.append('<div class="metabar"><span>版本 v%s</span><span>扫描时间 %s</span><span>覆盖工具 %d 个</span></div>'
-             % (esc(VERSION), esc(meta.get("time", "")), len(results)))
-    P.append('</header>')
 
-    installed = [r for r in results if r["report"].get("installed")]
-    with_snap = [r for r in results if r["snapshots"]]
-    with_static = [r for r in results if r.get("static")]
-    total_bytes = sum(r["report"].get("total_bytes", 0) for r in installed)
+def _html_head(meta, results):
+    """DOCTYPE / head / style / header。"""
+    return [
+        '<!DOCTYPE html>',
+        '<html lang="zh-CN"><head><meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width,initial-scale=1">',
+        '<title>AgentEgress 审计报告 · %s</title>' % _esc(meta.get("time", "")),
+        '<style>%s</style></head><body><div class="wrap">' % _HTML_STYLE,
+        '<header>',
+        '<h1>AgentEgress 审计报告</h1>',
+        '<div class="tagline">审「正在用的工具本身」— 只读 / 零依赖 / 不联网 / 不外传</div>',
+        '<div class="metabar"><span>版本 v%s</span><span>扫描时间 %s</span><span>覆盖工具 %d 个</span></div>'
+        % (_esc(VERSION), _esc(meta.get("time", "")), len(results)),
+        '</header>',
+    ]
 
-    P.append('<div class="grid stats">')
+
+def _html_stats(installed, with_snap, with_static, total_bytes):
+    """顶部四格统计。"""
+    P = ['<div class="grid stats">']
     for n, l in ((len(installed), "已安装工具"), (len(with_snap), "发现快照痕迹"),
                  (len(with_static), "已静态审计"), (human(total_bytes), "数据目录总量")):
-        P.append('<div class="stat"><div class="n">%s</div><div class="l">%s</div></div>' % (esc(str(n)), esc(l)))
+        P.append('<div class="stat"><div class="n">%s</div><div class="l">%s</div></div>'
+                 % (_esc(str(n)), _esc(l)))
     P.append('</div>')
+    return P
 
-    # ---- 筛选工具条
-    P.append('<div class="toolbar">')
-    P.append('<input type="search" id="q" placeholder="搜索工具 / 路径 / 证据关键词…（按 / 聚焦）">')
+
+def _html_toolbar():
+    """搜索框 + 等级筛选条。"""
+    P = ['<div class="toolbar">',
+         '<input type="search" id="q" placeholder="搜索工具 / 路径 / 证据关键词…（按 / 聚焦）">']
     for lv, label in (("all", "全部"), ("critical", "CRITICAL"), ("high", "HIGH"),
                       ("medium", "MEDIUM"), ("low", "LOW"), ("info", "INFO")):
-        P.append('<span class="chip%s" data-level="%s">%s</span>' % (" on" if lv == "all" else "", lv, label))
+        P.append('<span class="chip%s" data-level="%s">%s</span>'
+                 % (" on" if lv == "all" else "", lv, label))
     P.append('</div>')
+    return P
 
-    # ---- 摘要表
-    P.append('<div class="card open"><div class="card-h"><h2>总览</h2><span class="chev"></span></div>')
-    P.append('<div class="card-b"><table><thead><tr>'
-             '<th>工具</th><th>风险</th><th class="num">数据目录</th><th class="num">快照痕迹</th>'
-             '<th class="num">外传能力</th></tr></thead><tbody>')
+
+def _html_overview_table(results):
+    """总览表：每个工具一行。"""
+    P = ['<div class="card open"><div class="card-h"><h2>总览</h2><span class="chev"></span></div>',
+         '<div class="card-b"><table><thead><tr>'
+         '<th>工具</th><th>风险</th><th class="num">数据目录</th><th class="num">快照痕迹</th>'
+         '<th class="num">外传能力</th></tr></thead><tbody>']
     for r in results:
         t = r["report"]
         if not t.get("installed"):
             continue
         st = r.get("static") or {}
         sm = st.get("summary") or {}
-        cap_txt = "%d 确认 / %d 疑似" % (sm.get("confirmed", 0), sm.get("likely", 0)) if st else "—"
+        cap_txt = ("%d 确认 / %d 疑似" % (sm.get("confirmed", 0), sm.get("likely", 0))
+                   if st else "—")
         P.append('<tr><td><span class="name">%s</span><div class="sub mono">%s</div></td>'
                  '<td>%s</td><td class="num">%s</td><td class="num">%d</td><td class="num">%s</td></tr>'
-                 % (esc(t["name"]), esc(t["id"]),
-                    _badge(r["level"]), esc(human(t["total_bytes"])),
-                    len(r["snapshots"]), esc(cap_txt)))
+                 % (_esc(t["name"]), _esc(t["id"]),
+                    _badge(r["level"]), _esc(human(t["total_bytes"])),
+                    len(r["snapshots"]), _esc(cap_txt)))
     P.append('</tbody></table></div></div>')
+    return P
 
-    # ---- 每个工具一张卡
-    for r in results:
-        t = r["report"]
-        if not t.get("installed"):
-            continue
-        # 搜索索引：必须包含证据（文件名 + 代码片段），否则「搜索证据关键词」是假的
-        ev_parts = []
-        _st_for_search = r.get("static")
-        if _st_for_search:
-            for _c in _st_for_search["capabilities"]:
-                ev_parts.append(_c["name"])
-                ev_parts.extend(_c.get("files", [])[:12])
-                for _h in _c["hits"][:6]:
-                    ev_parts.append(_h.get("file", ""))
-                    ev_parts.append(_h.get("snippet", "")[:120])
-        search_blob = " ".join([
-            t["name"], t["id"], t.get("vendor", ""),
-            " ".join(root["path"] for root in t["roots"]),
-            " ".join(w for w in r["reasons"]),
-        ] + ev_parts).lower()
-        P.append('<div class="card" data-level="%s" data-search="%s">'
-                 % (esc(r["level"]), esc(search_blob)))
-        P.append('<div class="card-h">%s<span class="name">%s</span>'
-                 '<span class="sub">%s</span><span class="chev"></span></div>'
-                 % (_badge(r["level"]), esc(t["name"]), esc(t.get("vendor", ""))))
-        P.append('<div class="card-b">')
 
-        if t.get("note"):
-            P.append('<p class="sub" style="margin-bottom:10px">%s</p>' % esc(t["note"]))
+def _html_search_blob(t, r):
+    """卡片级搜索索引。
 
-        for why in r["reasons"]:
-            cls = "crit" if r["level"] in ("critical", "high") else ("med" if r["level"] == "medium" else "")
-            P.append('<div class="why %s">%s</div>' % (cls, esc(why)))
+    必须包含证据（文件名 + 代码片段），否则「搜索证据关键词」是假的。
+    """
+    parts = []
+    st = r.get("static")
+    if st:
+        for c in st["capabilities"]:
+            parts.append(c["name"])
+            parts.extend(c.get("files", [])[:12])
+            for h in c["hits"][:6]:
+                parts.append(h.get("file", ""))
+                parts.append(h.get("snippet", "")[:120])
+    return " ".join([
+        t["name"], t["id"], t.get("vendor", ""),
+        " ".join(root["path"] for root in t["roots"]),
+        " ".join(w for w in r["reasons"]),
+    ] + parts).lower()
 
-        P.append('<div class="sec"><h3>数据目录</h3><ul class="plain">')
-        for root in t["roots"]:
-            extra = ""
-            if root.get("excluded_bytes"):
-                extra = ' <span class="muted small">（携带区 %s 已排除）</span>' % esc(human(root["excluded_bytes"]))
-            P.append('<li><span class="sz">%s</span><span class="mono">%s</span>%s</li>'
-                     % (esc(human(root["bytes"])), esc(root["path"]), extra))
+
+def _html_roots(t):
+    """数据目录列表。"""
+    P = ['<div class="sec"><h3>数据目录</h3><ul class="plain">']
+    for root in t["roots"]:
+        extra = ""
+        if root.get("excluded_bytes"):
+            extra = (' <span class="muted small">（携带区 %s 已排除）</span>'
+                     % _esc(human(root["excluded_bytes"])))
+        P.append('<li><span class="sz">%s</span><span class="mono">%s</span>%s</li>'
+                 % (_esc(human(root["bytes"])), _esc(root["path"]), extra))
+    P.append('</ul></div>')
+    return P
+
+
+def _html_switches(t):
+    """开关语义落差表。"""
+    if not t.get("switches"):
+        return []
+    P = ['<div class="sec"><h3>开关语义落差</h3><table><thead><tr>'
+         '<th>开关</th><th>声称控制</th><th>实际控制</th></tr></thead><tbody>']
+    for sw in t["switches"]:
+        P.append('<tr><td class="mono">%s</td><td>%s</td><td>%s</td></tr>'
+                 % (_esc(sw["key"]), _esc(sw["claimed"]), _esc(sw["actual"])))
+    P.append('</tbody></table></div>')
+    return P
+
+
+def _html_suspicious(t):
+    """可疑文件列表（按体积降序，前 12）。"""
+    if not t["suspicious_files"]:
+        return []
+    P = ['<div class="sec"><h3>可疑文件</h3><ul class="plain">']
+    for f in sorted(t["suspicious_files"], key=lambda x: -x["size"])[:12]:
+        P.append('<li><span class="sz">%s</span><span class="mono">%s</span></li>'
+                 % (_esc(human(f["size"])), _esc(f["path"])))
+    P.append('</ul></div>')
+    return P
+
+
+def _html_snapshot(s):
+    """单个快照状态块（含打包清单 / 跨工作区配置 / .git 项 / 未发包）。"""
+    P = ['<div class="sec"><h3>快照状态</h3>', '<dl class="kv">',
+         '<dt>状态文件</dt><dd class="mono">%s</dd>' % _esc(s["state_file"]),
+         '<dt>工作区</dt><dd class="mono">%s</dd>' % _esc(s["workspace"] or "（未记录）"),
+         '<dt>失败计数</dt><dd><b>%s</b></dd>' % _esc(str(s["failure_count"]))]
+    if s["workspace_bytes"] is not None:
+        P.append('<dt>最近打包</dt><dd>%s &rarr; 加密后 %s</dd>'
+                 % (_esc(human(s["workspace_bytes"])), _esc(human(s["encrypted_bytes"] or 0))))
+    P.append('</dl>')
+
+    for m in s["manifests"]:
+        P.append('<h3 style="margin-top:14px">打包清单 · %s</h3>' % _esc(m["schema"] or "unknown"))
+        P.append('<p class="small muted">共 %d 个文件 / %s</p>'
+                 % (m["file_count"], _esc(human(m["bytes"]))))
+        P.append('<details><summary>展开文件列表（前 30）</summary><table>')
+        for e in m["entries"][:30]:
+            P.append('<tr><td class="num">%s</td><td class="mono">%s</td></tr>'
+                     % (_esc(human(int(e["size"] or 0))), _esc(str(e["path"]))))
+        if len(m["entries"]) > 30:
+            P.append('<tr><td colspan="2" class="muted small">… 其余 %d 项</td></tr>'
+                     % (len(m["entries"]) - 30))
+        P.append('</table></details>')
+
+    for x in s["extra_manifests"]:
+        P.append('<h3 style="margin-top:14px">跨工作区全局配置</h3><ul class="plain">')
+        for e in x["entries"]:
+            P.append('<li><span class="sz">%s</span><span class="mono">%s</span>'
+                     '<span class="muted small">%s</span></li>'
+                     % (_esc(human(int(e["size"] or 0))), _esc(str(e["path"])),
+                        _esc(e.get("source", ""))))
+        P.append('</ul>')
+
+    if s["git_in_manifest"]:
+        P.append('<div class="warnbox"><b>清单包含 %d 项 .git 内部文件</b>'
+                 '——历史中可能残留已删除的密钥。<ul class="plain" style="margin-top:6px">'
+                 % len(s["git_in_manifest"]))
+        for g in s["git_in_manifest"][:8]:
+            P.append('<li class="mono">%s</li>' % _esc(g))
         P.append('</ul></div>')
 
-        if t.get("endpoints"):
-            P.append('<div class="sec"><h3>已知出站端点</h3><div class="mono">%s</div></div>'
-                     % esc(", ".join(t["endpoints"])))
-
-        if t.get("switches"):
-            P.append('<div class="sec"><h3>开关语义落差</h3><table><thead><tr>'
-                     '<th>开关</th><th>声称控制</th><th>实际控制</th></tr></thead><tbody>')
-            for sw in t["switches"]:
-                P.append('<tr><td class="mono">%s</td><td>%s</td><td>%s</td></tr>'
-                         % (esc(sw["key"]), esc(sw["claimed"]), esc(sw["actual"])))
-            P.append('</tbody></table></div>')
-
-        if t["suspicious_files"]:
-            P.append('<div class="sec"><h3>可疑文件</h3><ul class="plain">')
-            for f in sorted(t["suspicious_files"], key=lambda x: -x["size"])[:12]:
-                P.append('<li><span class="sz">%s</span><span class="mono">%s</span></li>'
-                         % (esc(human(f["size"])), esc(f["path"])))
-            P.append('</ul></div>')
-
-        for s in r["snapshots"]:
-            P.append('<div class="sec"><h3>快照状态</h3>')
-            P.append('<dl class="kv">')
-            P.append('<dt>状态文件</dt><dd class="mono">%s</dd>' % esc(s["state_file"]))
-            P.append('<dt>工作区</dt><dd class="mono">%s</dd>' % esc(s["workspace"] or "（未记录）"))
-            P.append('<dt>失败计数</dt><dd><b>%s</b></dd>' % esc(str(s["failure_count"])))
-            if s["workspace_bytes"] is not None:
-                P.append('<dt>最近打包</dt><dd>%s &rarr; 加密后 %s</dd>'
-                         % (esc(human(s["workspace_bytes"])), esc(human(s["encrypted_bytes"] or 0))))
-            P.append('</dl>')
-            for m in s["manifests"]:
-                P.append('<h3 style="margin-top:14px">打包清单 · %s</h3>' % esc(m["schema"] or "unknown"))
-                P.append('<p class="small muted">共 %d 个文件 / %s</p>' % (m["file_count"], esc(human(m["bytes"]))))
-                P.append('<details><summary>展开文件列表（前 30）</summary><table>')
-                for e in m["entries"][:30]:
-                    P.append('<tr><td class="num">%s</td><td class="mono">%s</td></tr>'
-                             % (esc(human(int(e["size"] or 0))), esc(str(e["path"]))))
-                if len(m["entries"]) > 30:
-                    P.append('<tr><td colspan="2" class="muted small">… 其余 %d 项</td></tr>'
-                             % (len(m["entries"]) - 30))
-                P.append('</table></details>')
-            for x in s["extra_manifests"]:
-                P.append('<h3 style="margin-top:14px">跨工作区全局配置</h3><ul class="plain">')
-                for e in x["entries"]:
-                    P.append('<li><span class="sz">%s</span><span class="mono">%s</span>'
-                             '<span class="muted small">%s</span></li>'
-                             % (esc(human(int(e["size"] or 0))), esc(str(e["path"])), esc(e.get("source", ""))))
-                P.append('</ul>')
-            if s["git_in_manifest"]:
-                P.append('<div class="warnbox"><b>清单包含 %d 项 .git 内部文件</b>'
-                         '——历史中可能残留已删除的密钥。<ul class="plain" style="margin-top:6px">'
-                         % len(s["git_in_manifest"]))
-                for g in s["git_in_manifest"][:8]:
-                    P.append('<li class="mono">%s</li>' % esc(g))
-                P.append('</ul></div>')
-            if s["pending"]:
-                P.append('<div class="sec"><h3>未发出的包</h3><ul class="plain">')
-                for p in s["pending"]:
-                    P.append('<li><span class="sz">%s</span><span class="mono">%s</span></li>'
-                             % (esc(human(p["size"])), esc(p["path"])))
-                P.append('</ul></div>')
-            P.append('</div>')
-
-        st = r.get("static")
-        if st:
-            sm = st["summary"]
-            cov = st.get("coverage") or {}
-            P.append('<div class="sec"><h3>外传能力画像（M3 静态审计）</h3>')
-            P.append('<div class="why %s"><b>%s</b> — 已确认 %d / 疑似 %d / 弱信号 %d'
-                     '<br><span class="muted small">'
-                     '扫描 %d 个文件 / %s；判定依据是「能力」而非「当前行为」'
-                     '</span></div>'
-                     % ("crit" if sm["verdict"] == "high" else ("med" if sm["verdict"] in ("elevated", "medium") else ""),
-                        esc(sm["text"]), sm["confirmed"], sm["likely"], sm["possible"],
-                        st["files_scanned"], esc(human(st["bytes_scanned"]))))
-
-            # 覆盖台账：必须在报告里显式出现。
-            # 否则「未发现显著外传能力」和「真的扫全了且没有」在视觉上完全一样，
-            # 那等于把漏报包装成干净结论。
-            if cov:
-                gaps = cov.get("gaps", 0)
-                box = "warnbox" if gaps else ""
-                P.append('<div class="%s small" style="margin-top:8px">' % box)
-                P.append('<b>覆盖台账</b>：候选 %d 个文件 &rarr; 读到 %d 个 &rarr; '
-                         '<b>真正跑完正则 %d 个</b>；'
-                         '设计内跳过：第三方依赖 %d、压缩产物 %d、未知扩展名 %d'
-                         % (cov.get("candidates", 0), cov.get("scanned", 0),
-                            cov.get("analyzed", 0),
-                            cov.get("skipped_vendor", 0), cov.get("skipped_ext", 0),
-                            cov.get("skipped_other", 0)))
-                if cov.get("prefilter_rejected"):
-                    P.append('<br>关键词预筛未通过 %d 个（未跑正则）——'
-                             '这意味着它们<b>只做了字面量检查</b>：'
-                             '若危险串是运行时拼装或编码的，会在这里被漏掉。'
-                             % cov["prefilter_rejected"])
-                if gaps:
-                    P.append('<br><b>因技术原因未覆盖 %d 项</b>'
-                             '（大文件 %d / 目录截断 %s / 读取失败 %d）——'
-                             '这意味着「未检出」不等于「已排除」'
-                             % (gaps, cov.get("skipped_large", 0),
-                                "是" if cov.get("truncated") else "否",
-                                cov.get("read_errors", 0)))
-                else:
-                    P.append('<br>因技术原因未覆盖：0 项')
-                P.append('</div>')
-
-            # 组合证据：**不是**数据流链。措辞必须让读者看出这个区别。
-            chains = st.get("chains") or []
-            if chains:
-                P.append('<div class="sec"><h3>组合证据（共现检测）</h3>')
-                P.append('<div class="warnbox small" style="margin-bottom:10px">'
-                         '<b>本项不是数据流分析。</b>它只检查「构成某个故事所需的几类证据是否同时存在」，'
-                         '<b>不检查</b>它们是否落在同一条可达路径上。'
-                         '三个互不相关的模块各有一个能力，也会被组合出来。'
-                         '请结合每条组合的「关联度」自行判断——'
-                         '要确认它们真的连成一条链，需要人工核对或动态验证。</div>')
-                for ch in chains:
-                    blocking = ch["level"] == "blocking"
-                    coh_class = "crit" if ch.get("cohesion") == "same_file" else ""
-                    P.append('<div class="why %s" style="margin-bottom:8px">'
-                             % ("crit" if blocking else ("med" if not coh_class else coh_class)))
-                    P.append('<b>%s</b> %s<br>'
-                             % ("[阻断级]" if blocking else "[严重]", esc(ch["name"])))
-                    P.append('<span class="sub small">%s</span><br>' % esc(ch["desc"]))
-                    P.append('<span class="small"><b>关联度：</b>%s</span>'
-                             % esc(ch.get("cohesion_label", "")))
-                    if ch.get("same_files"):
-                        P.append('<br><span class="small mono">共有文件：%s</span>'
-                                 % esc("、".join(ch["same_files"])))
-                    P.append('<br><span class="small mono">证据：%s</span>'
-                             % esc(" ＋ ".join(
-                                 "%s(%s, %d处命中)" % (e["name"], e["level"], e["hits"])
-                                 for e in ch["evidence"])))
-                    if ch["auto_trigger"]:
-                        P.append('<br><span class="small"><b>触发方式：组合中存在「自动触发」'
-                                 '的能力</b>——其性质与「用户主动」完全不同</span>')
-                    P.append('</div>')
-                P.append('</div>')
-
-            shown = [c for c in st["capabilities"] if c["level"] != "absent"]
-            if shown:
-                P.append('<table style="margin-top:10px"><thead><tr>'
-                         '<th>能力</th><th style="width:88px">等级</th><th style="width:110px">证据强度</th>'
-                         '<th class="num" style="width:64px">命中</th><th>触发推断</th></tr></thead><tbody>')
-                for c in shown:
-                    tr = c.get("trigger_hint") or {}
-                    tmap = {"automatic": "自动", "user_initiated": "用户主动",
-                            "mixed": "混合", "unknown": "未判定"}
-                    risk_txt = {"high": "高", "medium": "中", "low": "低"}.get(c["risk"], c["risk"])
-                    P.append('<tr><td title="模型分 %s"><b>%s</b>'
-                             '<span class="muted small" style="margin-left:6px">风险:%s</span>'
-                             '<div class="sub small">%s</div></td>'
-                             '<td>%s</td><td>%s</td><td class="num" title="%d 个模式 / %d 个文件">%d</td>'
-                             '<td class="sub">%s</td></tr>'
-                             % (esc(str(c["score"])), esc(c["name"]), esc(risk_txt),
-                                esc(c["desc"]),
-                                _badge(c["level"], c["risk"]),
-                                _bar(c["level"], c["pattern_count"], c["risk"]),
-                                c["pattern_count"], c["file_count"], c["hit_total"],
-                                esc(tmap.get(tr.get("verdict"), "—"))))
-                    P.append('<tr><td colspan="5" style="padding-top:0;border-bottom:1px solid var(--bd)">')
-                    P.append('<details><summary>证据链（%d 个模式 / %d 个文件 / %d 处命中，展示 %d 条）</summary><div class="ev">'
-                             % (c["pattern_count"], c["file_count"], c["hit_total"], len(c["hits"])))
-                    for h in c["hits"][:15]:
-                        P.append('<div style="margin:5px 0"><div class="loc">%s:%d &nbsp;·&nbsp; %s &nbsp;·&nbsp; %s 区 &nbsp;·&nbsp; %s &nbsp;·&nbsp; w=%d</div>'
-                                 '<pre>%s</pre></div>'
-                                 % (esc(h["file"]), h["line"], esc(h["note"]),
-                                    esc(h["region"]), esc(h["file_class"]), h["weight"],
-                                    esc(h["snippet"])))
-                    if len(c["hits"]) > 15:
-                        P.append('<div class="muted small" style="margin-top:6px">… 其余 %d 条</div>'
-                                 % (len(c["hits"]) - 15))
-                    P.append('</div></details></td></tr>')
-                P.append('</tbody></table>')
-            else:
-                P.append('<p class="muted small" style="margin-top:8px">未发现显著外传能力特征。</p>')
-
-            absents = [c["name"] for c in st["capabilities"] if c["level"] == "absent"]
-            if absents:
-                P.append('<p class="muted small" style="margin-top:10px">未检出：%s</p>' % esc("、".join(absents)))
-
-            for tg in st["targets"]:
-                if tg.get("errors"):
-                    P.append('<details><summary>审计目标与异常（%d 条）</summary><div class="ev">'
-                             % len(tg["errors"]))
-                    P.append('<div class="loc mono">%s</div>' % esc(tg["path"]))
-                    for e in tg["errors"][:10]:
-                        P.append('<pre>%s</pre>' % esc(e))
-                    P.append('</div></details>')
-            P.append('</div>')
-
-        P.append('</div></div>')
-
-    P.append('<div class="notebox"><b>取证边界</b><br>'
-             '本地取证能证明：链路被触发过、打包了哪些文件、失败了多少次、客户端有没有外传能力。<br>'
-             '本地取证<b>不能</b>证明：服务端是否已接收 / 已删除，以及「尝试」与「成功」的区别——'
-             '那需要网络层证据（连接跟踪 / 抓包 / 网关日志）。</div>')
-
-    P.append('<footer>AgentEgress v%s · 本报告为单文件自包含，未引用任何外部资源 · 生成于 %s</footer>'
-             % (esc(VERSION), esc(meta.get("time", ""))))
+    if s["pending"]:
+        P.append('<div class="sec"><h3>未发出的包</h3><ul class="plain">')
+        for p in s["pending"]:
+            P.append('<li><span class="sz">%s</span><span class="mono">%s</span></li>'
+                     % (_esc(human(p["size"])), _esc(p["path"])))
+        P.append('</ul></div>')
     P.append('</div>')
+    return P
 
-    payload = json.dumps({"time": meta.get("time"), "tools": [r["report"]["id"] for r in results]},
+
+def _html_coverage_box(cov):
+    """覆盖台账。
+
+    必须在报告里显式出现——否则「未发现显著外传能力」和「真的扫全了且没有」
+    在视觉上完全一样，那等于把漏报包装成干净结论。
+    """
+    if not cov:
+        return []
+    gaps = cov.get("gaps", 0)
+    P = ['<div class="%s small" style="margin-top:8px">' % ("warnbox" if gaps else "")]
+    P.append('<b>覆盖台账</b>：候选 %d 个文件 &rarr; 读到 %d 个 &rarr; '
+             '<b>真正跑完正则 %d 个</b>；'
+             '设计内跳过：第三方依赖 %d、压缩产物 %d、未知扩展名 %d'
+             % (cov.get("candidates", 0), cov.get("scanned", 0),
+                cov.get("analyzed", 0),
+                cov.get("skipped_vendor", 0), cov.get("skipped_ext", 0),
+                cov.get("skipped_other", 0)))
+    if cov.get("prefilter_rejected"):
+        P.append('<br>关键词预筛未通过 %d 个（未跑正则）——'
+                 '这意味着它们<b>只做了字面量检查</b>：'
+                 '若危险串是运行时拼装或编码的，会在这里被漏掉。'
+                 % cov["prefilter_rejected"])
+    if gaps:
+        P.append('<br><b>因技术原因未覆盖 %d 项</b>'
+                 '（大文件 %d / 目录截断 %s / 读取失败 %d）——'
+                 '这意味着「未检出」不等于「已排除」'
+                 % (gaps, cov.get("skipped_large", 0),
+                    "是" if cov.get("truncated") else "否",
+                    cov.get("read_errors", 0)))
+    else:
+        P.append('<br>因技术原因未覆盖：0 项')
+    P.append('</div>')
+    return P
+
+
+def _html_chains(chains):
+    """组合证据块。
+
+    **不是数据流链** —— 措辞必须让读者看出这个区别。
+    """
+    if not chains:
+        return []
+    P = ['<div class="sec"><h3>组合证据（共现检测）</h3>',
+         '<div class="warnbox small" style="margin-bottom:10px">'
+         '<b>本项不是数据流分析。</b>它只检查「构成某个故事所需的几类证据是否同时存在」，'
+         '<b>不检查</b>它们是否落在同一条可达路径上。'
+         '三个互不相关的模块各有一个能力，也会被组合出来。'
+         '请结合每条组合的「关联度」自行判断——'
+         '要确认它们真的连成一条链，需要人工核对或动态验证。</div>']
+    for ch in chains:
+        blocking = ch["level"] == "blocking"
+        coh_class = "crit" if ch.get("cohesion") == "same_file" else ""
+        P.append('<div class="why %s" style="margin-bottom:8px">'
+                 % ("crit" if blocking else ("med" if not coh_class else coh_class)))
+        P.append('<b>%s</b> %s<br>'
+                 % ("[阻断级]" if blocking else "[严重]", _esc(ch["name"])))
+        P.append('<span class="sub small">%s</span><br>' % _esc(ch["desc"]))
+        P.append('<span class="small"><b>关联度：</b>%s</span>'
+                 % _esc(ch.get("cohesion_label", "")))
+        if ch.get("same_files"):
+            P.append('<br><span class="small mono">共有文件：%s</span>'
+                     % _esc("、".join(ch["same_files"])))
+        P.append('<br><span class="small mono">证据：%s</span>'
+                 % _esc(" ＋ ".join(
+                     "%s(%s, %d处命中)" % (e["name"], e["level"], e["hits"])
+                     for e in ch["evidence"])))
+        if ch["auto_trigger"]:
+            P.append('<br><span class="small"><b>触发方式：组合中存在「自动触发」'
+                     '的能力</b>——其性质与「用户主动」完全不同</span>')
+        P.append('</div>')
+    P.append('</div>')
+    return P
+
+
+def _html_capability_table(caps):
+    """能力表 + 每个能力的证据链折叠块。"""
+    shown = [c for c in caps if c["level"] != "absent"]
+    if not shown:
+        return ['<p class="muted small" style="margin-top:8px">未发现显著外传能力特征。</p>']
+    P = ['<table style="margin-top:10px"><thead><tr>'
+         '<th>能力</th><th style="width:88px">等级</th><th style="width:110px">证据强度</th>'
+         '<th class="num" style="width:64px">命中</th><th>触发推断</th></tr></thead><tbody>']
+    tmap = {"automatic": "自动", "user_initiated": "用户主动",
+            "mixed": "混合", "unknown": "未判定"}
+    for c in shown:
+        tr = c.get("trigger_hint") or {}
+        risk_txt = {"high": "高", "medium": "中", "low": "低"}.get(c["risk"], c["risk"])
+        P.append('<tr><td title="模型分 %s"><b>%s</b>'
+                 '<span class="muted small" style="margin-left:6px">风险:%s</span>'
+                 '<div class="sub small">%s</div></td>'
+                 '<td>%s</td><td>%s</td><td class="num" title="%d 个模式 / %d 个文件">%d</td>'
+                 '<td class="sub">%s</td></tr>'
+                 % (_esc(str(c["score"])), _esc(c["name"]), _esc(risk_txt),
+                    _esc(c["desc"]),
+                    _badge(c["level"], c["risk"]),
+                    _bar(c["level"], c["pattern_count"], c["risk"]),
+                    c["pattern_count"], c["file_count"], c["hit_total"],
+                    _esc(tmap.get(tr.get("verdict"), "—"))))
+        P.append('<tr><td colspan="5" style="padding-top:0;border-bottom:1px solid var(--bd)">')
+        P.append('<details><summary>证据链（%d 个模式 / %d 个文件 / %d 处命中，展示 %d 条）'
+                 '</summary><div class="ev">'
+                 % (c["pattern_count"], c["file_count"], c["hit_total"], len(c["hits"])))
+        for h in c["hits"][:15]:
+            P.append('<div style="margin:5px 0"><div class="loc">'
+                     '%s:%d &nbsp;·&nbsp; %s &nbsp;·&nbsp; %s 区 &nbsp;·&nbsp; %s &nbsp;·&nbsp; w=%d</div>'
+                     '<pre>%s</pre></div>'
+                     % (_esc(h["file"]), h["line"], _esc(h["note"]),
+                        _esc(h["region"]), _esc(h["file_class"]), h["weight"],
+                        _esc(h["snippet"])))
+        if len(c["hits"]) > 15:
+            P.append('<div class="muted small" style="margin-top:6px">… 其余 %d 条</div>'
+                     % (len(c["hits"]) - 15))
+        P.append('</div></details></td></tr>')
+    P.append('</tbody></table>')
+    return P
+
+
+def _html_static_block(st):
+    """M3 完整块：摘要 + 覆盖台账 + 组合证据 + 能力表 + 未检出 + 异常。"""
+    sm = st["summary"]
+    P = ['<div class="sec"><h3>外传能力画像（M3 静态审计）</h3>']
+    P.append('<div class="why %s"><b>%s</b> — 已确认 %d / 疑似 %d / 弱信号 %d'
+             '<br><span class="muted small">'
+             '扫描 %d 个文件 / %s；判定依据是「能力」而非「当前行为」'
+             '</span></div>'
+             % ("crit" if sm["verdict"] == "high"
+                else ("med" if sm["verdict"] in ("elevated", "medium") else ""),
+                _esc(sm["text"]), sm["confirmed"], sm["likely"], sm["possible"],
+                st["files_scanned"], _esc(human(st["bytes_scanned"]))))
+    P += _html_coverage_box(st.get("coverage") or {})
+    P += _html_chains(st.get("chains") or [])
+    P += _html_capability_table(st["capabilities"])
+
+    absents = [c["name"] for c in st["capabilities"] if c["level"] == "absent"]
+    if absents:
+        P.append('<p class="muted small" style="margin-top:10px">未检出：%s</p>'
+                 % _esc("、".join(absents)))
+
+    for tg in st["targets"]:
+        if tg.get("errors"):
+            P.append('<details><summary>审计目标与异常（%d 条）</summary><div class="ev">'
+                     % len(tg["errors"]))
+            P.append('<div class="loc mono">%s</div>' % _esc(tg["path"]))
+            for e in tg["errors"][:10]:
+                P.append('<pre>%s</pre>' % _esc(e))
+            P.append('</div></details>')
+    P.append('</div>')
+    return P
+
+
+def _html_tool_card(r):
+    """单个工具卡：摘要 + 理由 + 目录 + 开关 + 可疑文件 + 快照 + M3。"""
+    t = r["report"]
+    P = ['<div class="card" data-level="%s" data-search="%s">'
+         % (_esc(r["level"]), _esc(_html_search_blob(t, r)))]
+    P.append('<div class="card-h">%s<span class="name">%s</span>'
+             '<span class="sub">%s</span><span class="chev"></span></div>'
+             % (_badge(r["level"]), _esc(t["name"]), _esc(t.get("vendor", ""))))
+    P.append('<div class="card-b">')
+
+    if t.get("note"):
+        P.append('<p class="sub" style="margin-bottom:10px">%s</p>' % _esc(t["note"]))
+    for why in r["reasons"]:
+        cls = ("crit" if r["level"] in ("critical", "high")
+               else ("med" if r["level"] == "medium" else ""))
+        P.append('<div class="why %s">%s</div>' % (cls, _esc(why)))
+
+    P += _html_roots(t)
+    if t.get("endpoints"):
+        P.append('<div class="sec"><h3>已知出站端点</h3><div class="mono">%s</div></div>'
+                 % _esc(", ".join(t["endpoints"])))
+    P += _html_switches(t)
+    P += _html_suspicious(t)
+    for s in r["snapshots"]:
+        P += _html_snapshot(s)
+    if r.get("static"):
+        P += _html_static_block(r["static"])
+
+    P.append('</div></div>')
+    return P
+
+
+def _html_footer(meta, results):
+    """取证边界说明 + 页脚 + 脚本。"""
+    P = ['<div class="notebox"><b>取证边界</b><br>'
+         '本地取证能证明：链路被触发过、打包了哪些文件、失败了多少次、'
+         '客户端有没有外传能力。<br>'
+         '本地取证<b>不能</b>证明：服务端是否已接收 / 已删除，以及「尝试」与「成功」的区别——'
+         '那需要网络层证据（连接跟踪 / 抓包 / 网关日志）。</div>',
+         '<footer>AgentEgress v%s · 本报告为单文件自包含，未引用任何外部资源 · 生成于 %s</footer>'
+         % (_esc(VERSION), _esc(meta.get("time", ""))),
+         '</div>']
+    payload = json.dumps({"time": meta.get("time"),
+                          "tools": [r["report"]["id"] for r in results]},
                          ensure_ascii=False)
-    P.append('<script>%s</script>' % _HTML_SCRIPT.replace("__DATA__", payload).replace("</", "<\\/"))
+    P.append('<script>%s</script>'
+             % _HTML_SCRIPT.replace("__DATA__", payload).replace("</", "<\\/"))
     P.append('</body></html>')
+    return P
+
+
+def render_html(results, meta):
+    """组装 HTML 报告（各部分见上方 _html_* 函数）。"""
+    installed = [r for r in results if r["report"].get("installed")]
+    with_snap = [r for r in results if r["snapshots"]]
+    with_static = [r for r in results if r.get("static")]
+    total_bytes = sum(r["report"].get("total_bytes", 0) for r in installed)
+
+    P = []
+    P += _html_head(meta, results)
+    P += _html_stats(installed, with_snap, with_static, total_bytes)
+    P += _html_toolbar()
+    P += _html_overview_table(results)
+    for r in results:
+        if not r["report"].get("installed"):
+            continue
+        P += _html_tool_card(r)
+    P += _html_footer(meta, results)
     return "\n".join(P)
 
 

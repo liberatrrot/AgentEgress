@@ -429,8 +429,68 @@ def check_near_negative():
         ),
     }
 
+    # ---- 期望表 ----
+    #
+    # 红队的批评：原来的判据只是「没触发阻断级链」，它证明的是**没吓到用户**，
+    # 而不是**报告符合预期**。`possible upload + likely encryption + possible archive`
+    # 仍然会让用户以为"这程序有可疑外传能力"。
+    #
+    # 所以每个场景预先声明它**应该**和**不应该**被检出什么。
+    # 偏离期望就是失败——无论偏离方向是"报多了"还是"报少了"。
+    EXPECT = {
+        "auto_update": {
+            "expect_absent": ["workspace_snapshot", "credential_access",
+                              "object_storage_upload", "git_history_access"],
+            "max_level": {"telemetry_egress": "possible"},
+            "note": "只下载安装包，没有采集任何用户数据的证据",
+        },
+        "telemetry": {
+            "expect_absent": ["workspace_snapshot", "credential_access",
+                              "object_storage_upload", "git_history_access"],
+            "max_level": {"telemetry_egress": "likely"},
+            "note": "上报事件名与版本号是合法遥测，不应被判为工作区采集",
+        },
+        "crash_report": {
+            "expect_absent": ["workspace_snapshot", "credential_access",
+                              "object_storage_upload", "git_history_access"],
+            "max_level": {},
+            "note": "只发堆栈，无文件采集",
+        },
+        "oss_export": {
+            "expect_absent": ["workspace_snapshot", "credential_access",
+                              "git_history_access"],
+            "max_level": {"object_storage_upload": "possible",
+                          "upload_credential_api": "possible"},
+            "note": "有上传能力，但目标由用户配置、由用户点击触发——上限只能到 possible",
+        },
+        "local_crypto": {
+            "expect_absent": ["workspace_snapshot", "credential_access",
+                              "object_storage_upload", "upload_credential_api"],
+            "max_level": {"envelope_encryption": "likely"},
+            "note": "本地加密不联网，加密能力为真但不构成外传",
+        },
+    }
+
     problems = []
+    known = []
     details = []
+    LEVEL_ORDER = {"absent": 0, "possible": 1, "likely": 2, "confirmed": 3}
+
+    # ---- 已知缺口（xfail）----
+    #
+    # 这些是**真实存在的误报**，不是回归。用 xfail 标记而不是放宽期望值——
+    # 放宽期望等于把误报定义成"正常"，那是最糟的处理方式。
+    #
+    # 每条都必须写明：现象 / 为什么现在修不了 / 对应 TODO 条目。
+    KNOWN_GAPS = {
+        "oss_export": {
+            "object_storage_upload":
+                "「用户点击触发 + 目标桶由用户自己配置」仍被判 likely。"
+                "要区分「传到用户自己的桶」与「传到厂商的桶」需要目的地归属分析"
+                "（同一组字符串，见 TODO.md C 组）。当前记录为已知缺口。",
+        },
+    }
+
     try:
         for name, code in scenarios.items():
             d = os.path.join(tmp, name)
@@ -441,26 +501,57 @@ def check_near_negative():
             _h, _meta = ae.audit_path(d, acc=acc)
             caps = ae.aggregate_from_buckets(acc)
             lv = {c["id"]: c["level"] for c in caps}
-            chains = ae.detect_chains(caps)
+            chains = ae.detect_chains(caps, acc=acc)
 
+            exp = EXPECT.get(name, {})
+            gaps_here = KNOWN_GAPS.get(name, {})
+
+            def flag(cap_id, msg):
+                """命中问题时判断它属于「已知缺口」还是「新问题」。"""
+                if cap_id and cap_id in gaps_here:
+                    known.append("%s：%s" % (name, gaps_here[cap_id]))
+                else:
+                    problems.append(msg)
+
+            # 1) 期望不出现的能力必须为 absent
+            for cid in exp.get("expect_absent", []):
+                got = lv.get(cid, "absent")
+                if got != "absent":
+                    flag(cid, "%s：不该出现的能力 %s 被判为 %s" % (name, cid, got))
+            # 2) 各能力等级不得超过上限
+            for cid, cap_lv in exp.get("max_level", {}).items():
+                got = lv.get(cid, "absent")
+                if LEVEL_ORDER.get(got, 0) > LEVEL_ORDER.get(cap_lv, 0):
+                    flag(cid, "%s：%s 等级 %s 超过预期上限 %s"
+                         % (name, cid, got, cap_lv))
+            # 3) 不得触发阻断级组合
             blocking = [c["name"] for c in chains if c["level"] == "blocking"]
+            if blocking:
+                problems.append("%s：触发阻断级组合 %s" % (name, blocking))
+            # 4) 不得把高危能力判成 confirmed
             high_conf = [c["name"] for c in caps
                          if c["level"] == "confirmed" and c["risk"] == "high"]
-
-            if blocking:
-                problems.append("%s 触发了阻断级组合链：%s" % (name, blocking))
             if high_conf:
-                problems.append("%s 把高危能力判成 confirmed：%s" % (name, high_conf))
-            details.append("%s: 链%d 高危confirmed%d" % (name, len(chains), len(high_conf)))
+                problems.append("%s：高危能力被判 confirmed：%s" % (name, high_conf))
+
+            detected = [k for k, v in lv.items() if v != "absent"]
+            details.append("%s: 检出 %d 项" % (name, len(detected)))
     except Exception as e:                          # noqa: BLE001
         problems.append("近负样本检查异常：%r" % e)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-    return record("近负样本", not problems,
-                  "%d 类正常场景均未触发阻断级结论" % len(scenarios)
-                  if not problems else "；".join(problems[:3]),
-                  {"problems": problems, "details": details})
+    if problems:
+        summary = "；".join(problems[:3])
+    elif known:
+        summary = ("%d 类符合期望；已知缺口 %d 项（xfail，见 TODO.md）：%s"
+                   % (len(scenarios), len(known), known[0].split("：")[0]))
+    else:
+        summary = "%d 类正常场景均符合期望表" % len(scenarios)
+
+    return record("近负样本", not problems, summary,
+                  {"problems": problems, "details": details, "expect": EXPECT,
+                   "known_gaps": known})
 
 
 def check_prefilter_equivalence():
