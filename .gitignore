@@ -16,3 +16,11 @@ __pycache__/
 
 # 测试临时产物（基准 JSON 要留，日志与一次性脚本不留）
 tests/_*
+
+# dogfooding：解包出来的第三方客户端代码（体积大 + 版权属于对方）
+# 只提交「观察结论」（DOGFOODING-RESULTS.md），不提交样本本体。
+tests/dogfood/s1-zcode/
+tests/dogfood/s2-*/
+tests/dogfood/s3-*/
+tests/dogfood/s4-*/
+tests/dogfood/_*

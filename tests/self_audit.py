@@ -107,6 +107,23 @@ def gate_code_structure():
     ]
 
 
+def _count_known_gaps():
+    """读出 verify.py 里标记为 xfail 的已知缺口（场景名列表）。
+
+    为什么要在 Gate 输出里列出：Gate 通过后如果只显示一片绿色，
+    未来的自己会忘记这些洞。**测试系统通过 ≠ 产品能力无缺陷。**
+    """
+    p = os.path.join(HERE, "verify.py")
+    try:
+        src = open(p, encoding="utf-8").read()
+    except OSError:
+        return []
+    m = re.search(r"KNOWN_GAPS\s*=\s*\{(.*?)\n\}", src, re.S)
+    if not m:
+        return []
+    return [x.group(1) for x in re.finditer(r'"(\w+)":\s*\{', m.group(1))]
+
+
 GATE = [
     ("结论可信度", gate_conclusion_credibility),
     ("测试可信度", gate_test_credibility),
@@ -312,9 +329,20 @@ def main():
                 L.append("           %s" % d)
     L.append("")
     L.append("  " + "-" * 74)
-    L.append("  Gate 总判定：%s"
-             % ("✅ 可以进入 dogfooding" if gate_all
-                else "❌ 尚未达到，继续修债（不新增能力）"))
+    # 【措辞必须准确】Gate 说的是「具备进入真实样本阶段的工程条件」，
+    # **不是**「质量已验收」。这两件事必须分开写，否则未来的自己看到一片绿色
+    # 就会忘掉那些被 xfail 标记的已知缺口。
+    L.append("  Release-prep Gate：%s" % ("通过" if gate_all else "未通过"))
+    known = _count_known_gaps()
+    if known:
+        L.append("    ⚠ 已知缺口 %d 项（xfail，不阻止进入 dogfooding）：" % len(known))
+        for k in known:
+            L.append("        · %s" % k)
+        L.append("    ※ 「测试系统通过」≠「产品能力无缺陷」，两者必须分开记录。")
+    else:
+        L.append("    无已知缺口")
+    L.append("    语义：通过 = 可以安全进入 dogfooding 并知道如何记录未知；")
+    L.append("          不等于质量已验收。")
     L.append("  " + "-" * 74)
 
     L.append("")

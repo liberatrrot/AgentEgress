@@ -374,6 +374,29 @@ def check_cli(quick=False):
                   {"problems": problems})
 
 
+# ---- 已知缺口（xfail）----
+#
+# 这些是**真实存在的缺陷**，不是回归。用 xfail 标记而不是放宽期望值——
+# 放宽期望等于把缺陷定义成"正常"，那是最糟的处理方式。
+#
+# 每条都必须写明：现象 / 为什么现在修不了 / 对应 TODO 条目。
+# 提到模块级是为了让 self_audit.py 能在 Gate 输出里列出它们——
+# **Gate 通过后如果只显示一片绿色，未来的自己会忘记这些洞。**
+KNOWN_GAPS = {
+    "oss_export": {
+        "object_storage_upload":
+            "「用户点击触发 + 目标桶由用户自己配置」仍被判 likely。"
+            "要区分「传到用户自己的桶」与「传到厂商的桶」需要目的地归属分析"
+            "（同一组字符串，见 TODO.md B0）。",
+    },
+}
+
+
+def _count_known_gaps():
+    """给 self_audit.py 用：列出已知缺口。"""
+    return KNOWN_GAPS
+
+
 def check_near_negative():
     """近负样本：正常、但「像」外传的场景。
 
@@ -475,21 +498,6 @@ def check_near_negative():
     known = []
     details = []
     LEVEL_ORDER = {"absent": 0, "possible": 1, "likely": 2, "confirmed": 3}
-
-    # ---- 已知缺口（xfail）----
-    #
-    # 这些是**真实存在的误报**，不是回归。用 xfail 标记而不是放宽期望值——
-    # 放宽期望等于把误报定义成"正常"，那是最糟的处理方式。
-    #
-    # 每条都必须写明：现象 / 为什么现在修不了 / 对应 TODO 条目。
-    KNOWN_GAPS = {
-        "oss_export": {
-            "object_storage_upload":
-                "「用户点击触发 + 目标桶由用户自己配置」仍被判 likely。"
-                "要区分「传到用户自己的桶」与「传到厂商的桶」需要目的地归属分析"
-                "（同一组字符串，见 TODO.md C 组）。当前记录为已知缺口。",
-        },
-    }
 
     try:
         for name, code in scenarios.items():
