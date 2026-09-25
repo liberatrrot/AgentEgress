@@ -8,6 +8,107 @@
 
 ---
 
+# 记录标准 v2（S2 后修订）
+
+## 指标拆成两个（**取消主观权重**）
+
+旧写法 `S1 = 4.0 / S2 = 1.5` 里的 `0.5` **没有可重复定义**——
+以后"又来一种新形态算几分"会变成拍脑袋，指标也就失去统计价值。
+
+**改为两个独立指标：**
+
+| 指标 | 定义 | 回答的问题 |
+|---|---|---|
+| **Root-cause novelty** | 每个样本引入的**新 failure class** 数量 | 发现了多少**新的根因** |
+| **Manifestation novelty** | 按 class 分组记录**表现形态** | 同一根因有多少种**承载形式** |
+
+```
+Root-cause novelty
+  S1 = 4   （semantic-role / pattern / evidence dilution / evidence aggregation）
+  S2 = 1   （library-source contamination）
+
+Manifestation novelty
+  semantic-role confusion:
+    S1  denylist · CSP allowlist
+    S2  detector rule · data structure · UI display
+```
+
+## 每条分歧新增两个字段
+
+```python
+systemic_candidate: bool      # 「首次发现」与「已重复验证」是两个不同维度，
+                              # 不能只靠 novelty 计数判断
+structural_relation: str      # 当 structural 达到 moderate/strong 时必填：
+                              #   same-object / argument-flow / return-value /
+                              #   property-flow / call-chain / import-relation
+```
+
+## S2 的 CRITICAL **不判为误报**（新增观察维度）
+
+Ground Truth 认定 `uploadToCos` 有明确合法业务解释（知识库上传），
+但工具给 CRITICAL。**这不等于误报**——程序确实
+`读用户数据 → 加密/处理 → 取临时凭证 → 上传 COS`，能力是真的。
+
+真正的问题是：**「能力严重度」与「安全可疑程度」混在了一起。**
+
+所以新增三个观察维度（**暂不改风险等级**）：
+
+```
+Capability impact         能力本身有多重
+Evidence confidence       证据有多强
+Business-context evidence 是否存在明确合法解释
+```
+
+> 这背后是一个**产品定位问题**，现在不选：
+> **AgentEgress 评价的是「危险能力」，还是「可疑外传行为」？**
+> 若是前者，S2 的 CRITICAL 可能是对的；若是后者，它明显过重。
+
+## coverage loss reasons 要分类统计
+
+```
+候选 23270 → 读到 2731 → 真正跑正则 309     (S1)
+候选 18460 → 读到 1327 → 真正跑正则 602     (S2，另有 7 项技术缺口)
+```
+
+这已不是报告优化问题，而是研究变量：**检测器最终看到的代码量，与实际代码量差多少？**
+
+必须区分：
+```
+pattern failed            ← 规则没命中
+pattern never got to run  ← 文件根本没跑到正则
+```
+**这两个是完全不同的问题**，混在一起谈"漏报率"没有意义。
+
+Phase 1 后期按原因归类：
+```
+prefilter / file size / encoding / unsupported archive / third-party / generated / other
+```
+
+## Ground Truth 被推翻时的记录规则
+
+S2 出现的正当流程（**保留，不回改**）：
+
+```
+第一遍：Q3 = NO（倾向）           ← 人工判断
+工具证据：server.js:167746 tar.create(...)   ← 新证据
+修正为：Q3 = YES
+记录：谁推翻了谁 + 基于什么新证据
+```
+
+**不回头覆盖第一遍** —— 否则就看不出"三遍流程真的在相互审查"。
+流程已从 `人工裁判 → 工具考试` 变成 `独立证据 A ↕ 独立证据 B → 相互审查`。
+
+## S5 放最后
+
+```
+S1 ZCode / S2 WorkBuddy / S3 Kimi / S4 Cursor  ← 真实世界自然分布
+S5 tmp_attack                                  ← 已知构造样本，易受知识污染
+```
+
+S5 适合做**假设验证**，不适合作为**发现新模式**的主要证据。
+
+---
+
 # S1 · ZCode（`refs/ZCode\resources\app.asar`）
 
 293.6 MB / 26785 条目 / 自研代码 4129 条（其余是 node_modules）
@@ -477,4 +578,260 @@ await this.uploadToCos(created.cos_credential, buffer, contentType, …)  // 直
 **本轮仍不产生 Fix。** 冻结继续。
 
 > **Ground Truth 修正记录**：Q3 由 `NO（倾向）` → `YES`（依据 `server.js:167746` 的 `tar.create`）。
-> 修正来源是**工具的证据**，不是事后猜测。这是 dogfooding 的正当流程。| —— 后续样本应观察该值是否下降。
+> 修正来源是**工具的证据**，不是事后猜测。这是 dogfooding 的正当流程。
+
+---
+
+# S3 · opencode（`@opencode-aidesktop` 1.18.30）
+
+**⚠ 样本变更**：原计划的 Kimi Work / Cursor 的 asar 已不在磁盘上（软件已卸载）。
+改用 **opencode**（137.1 MB / 6991 条目 / 自研 1018）。
+**它其实更适合**：**开源软件**，Ground Truth 可对照上游真实源码。
+
+## 第一遍 · Ground Truth（**在跑工具之前写完**）
+
+| # | 问题 | 判定 | 人工依据 |
+|---|---|---|---|
+| Q1 | 工作区读取 | **YES** | `OPENCODE_WORKSPACE_ID` / `OPENCODE_EXPERIMENTAL_WORKSPACES`；`workspace` 全库 1310 处 |
+| Q2 | 敏感文件读取 | **NO** | `id_rsa` **0 处** |
+| Q3 | 归档 | **NO** | `createGzip` 仅 1 处 = **HTTP 请求压缩**（`compressAndSend`，`Content-Encoding: gzip`）；`archiver` 3 处其实是 **`ia_archiver`**（Internet Archive **爬虫 UA 正则**）|
+| Q4 | 加密 | **NO** | `createCipheriv` **0 处** |
+| Q5 | 外部网络 sink | **YES（但需分辨）** | `fetch(` 155 处；抽样显示大量属于 **lru-cache 等库**（`LRUCache.fetch()`）|
+| Q6 | 对象存储 | **NO** | `PutObject` 10 处**全部**是 `InputObject` —— 权限配置的 **schema 定义**（`Schema.StructWithRest({read,edit,glob})`）|
+| Q7 | 自动触发 | **YES** | `setInterval` 11 处：心跳续期 + OTel `PeriodicExportingMetricReader` |
+| Q8 | 数据关联证据 | **none** | 未发现 source→sink 结构关系 |
+| Q9 | 合法业务解释 | — | 见下方"产品语义"一节 |
+| Q10 | **结构关联强度** | **`none`** | 自研代码里没有外传链路，自然也没有结构关系 |
+
+### ⚠ 本样本最重要的结构事实：**核心逻辑工具扫不到**
+
+```
+/out/main/chunks/node-BIz0dqH1.js   33,909.7 KB  ← 33.1 MB
+```
+
+头部：`import { createRequire } from "node:module"` / `import * as crypto7 from "node:crypto"` /
+`import * as NFS from "node:fs"` …
+尾部：`await init_database(); export { Config, Database, Server, bootstrap };`
+
+**这是 opencode 的完整服务端 bundle**（`Database` / `Server` / `Config` / `bootstrap`），
+而且是**未压缩的可读代码**（有缩进与换行，不是 minified）。
+
+**但 33.1 MB > 工具的 `max_file_bytes = 8 MB` → 它会被 `skipped_large` 跳过。**
+
+工具实际能看到的 `/out/main/` 下文件只有：
+
+```
+  160.6 KB  /out/main/index.js
+    3.3 KB  /out/main/sidecar.js
+    7.8 KB  /out/preload/index.js
+    1.3 KB  /package.json
+```
+
+即：**工具只能看到约 168 KB，而应用的实质逻辑是 33 MB。**
+
+> 这正好落在老大提出的区分上：
+> ```
+> pattern failed            ← 规则没命中
+> pattern never got to run  ← 文件根本没跑到正则
+> ```
+> **S3 是第二个问题的极端案例**——不是规则不够好，
+> 而是**最核心的文件没有被读到**。
+
+### S3 的新 `semantic-role confusion` 形态
+
+`PutObject` 10 处命中的真相：
+```js
+InputObject = exports_Schema.StructWithRest(exports_Schema.Struct({
+  read: exports_Schema.optional(Rule2),
+  edit: exports_Schema.optional(Rule2),
+  glob: exports_Schema.optional(Rule2)…
+```
+**`Object` 是 schema 里的一个词**（`InputObject` / `Object2` / `PermissionObjectConfig`）。
+
+`archiver` 3 处命中的真相：
+```js
+{ test: [/ia_archiver/i], describe: function(e3) {
+    var t3 = { name: "InternetArchiveCrawler" }…
+```
+**`ia_archiver` 是 Internet Archive 爬虫的 User-Agent 字符串**，
+与"创建归档"毫无关系——只是**恰好包含 `archiver` 这个词**。
+
+> **到 S3，`semantic-role confusion` 的形态已累计 7 种**：
+> ```
+> S1  denylist（new Set）· CSP allowlist
+> S2  detector rule · SDK 数据结构 · UI props
+> S3  schema 类型定义（InputObject）· 第三方 UA 字符串（ia_archiver）
+> ```
+> **三种完全不同的软件，七种语义载体，同一个根因。**
+
+## 第二遍 · AgentEgress 输出（冻结版）
+
+```
+存在多项已确认的外传能力（注意：1 个文件未覆盖）
+已确认 2 / 疑似 3 / 弱信号 2
+
+覆盖台账: 候选 6699 -> 读到 841 -> 真正跑正则 645
+  关键词预筛未通过 196 个
+!! 因技术原因未覆盖 1 项：大文件 1
+
+[CONFIRMED] 失败自动重试 4/16/76
+[CONFIRMED] 遥测上报 3/533/3202
+[LIKELY] 凭据文件访问 3/3/7 | Git 历史访问 2/2/12 | 命令执行 3/4/16
+[POSSIBLE] 对象存储直传 1/5/5 | 批量打包 1/2/4
+未检出: 信封加密、跨工作区配置采集
+```
+
+**注意等级**：工具只给到「存在多项已确认的外传能力」（非 CRITICAL）。
+而 S1/S2 都是 CRITICAL。**原因不是 opencode 更干净，而是它 99.5% 的代码没被扫到。**
+
+## 第三遍 · 分歧与归因
+
+### 分歧 1 ★★★ · 凭据文件访问：人工 NO ↔ 工具 **likely**
+
+工具 3 个模式的证据，**全部来自编辑器的语言资源**：
+
+```
+[/out/renderer/assets/ssh-config-C1Jhmhk_.js:19] [SSH 密钥 w=8]
+   …JSON.parse('{"displayName":"SSH Config","fileTypes":["ssh_config",".ssh/config","sshd_config"]…
+
+[/out/renderer/assets/main-BDbQ3Vtm.js:115503] [包管理器凭据 w=7]
+   …".latexmkrc", ".login", ".luacheckrc", ".markdownlintignore", ".nodemonignore",
+      ".npmignore", ".npmrc", ".nvimrc"…
+
+[/out/renderer/assets/main-BDbQ3Vtm.js:109179] [系统钥匙串 w=6]
+   …canScrollKey(owner, key2) ? owner : root2; }  function isScrollKeyTarget…
+```
+
+**三种全新形态**：
+1. **语法高亮模板** —— 声明"这个语言有哪些文件名"（编辑器内置支持 SSH 配置文件高亮）
+2. **点文件清单** —— 编辑器识别的一堆 `.xxx` 配置文件列表
+3. **`key` 一词多义** —— `canScrollKey` / `isScrollKeyTarget` 里的 **key 是键盘按键**，
+   被 `keychain` 模式命中
+
+### 分歧 2 ★★ · 对象存储直传：人工 NO ↔ 工具 **possible**
+
+```
+[/out/renderer/assets/bsl-CVaYL_Im.js:20] [表单直传签名 w=7]
+   …"name":"support.function.bsl"},{"match":"(?i:…ЗначениеВДанныеФормы|ValueToFormData|…
+
+[/out/renderer/assets/dialog-connect-provider-CgLk08r5.js:1420]
+   …const form = e.currentTarget; const formData = new FormData(form);
+      const apiKey2 = formData.get("apiKey");…
+```
+
+1. **BSL（1C:Enterprise）语言的语法模板** —— `ValueToFormData` 是 BSL 的**内置函数名**
+2. **HTML 的 `FormData`** —— 前端表单提交，与对象存储无关
+
+### 分歧 3 ★★ · 批量打包：人工 NO ↔ 工具 **possible**
+
+```
+[/out/main/index.js:1074] [递归遍历目录 w=4]
+   …const file = join(current, entry); const info = statSync(file);
+      if (info.isDirectory()) { walk(file); continue;…
+
+[/out/renderer/assets/main-BDbQ3Vtm.js:9346]
+   …walk(root2); const observer…              ← DOM 遍历
+
+[/out/renderer/assets/main-BDbQ3Vtm.js:9363]
+   …visibleNodes.add(node); } else if (node instanceof Element) { walk(node);…
+```
+
+1. **文件系统遍历** —— 编辑器扫描项目文件，是**核心功能**
+2. **DOM 树遍历** —— `node instanceof Element` / `visibleNodes`，**浏览器 DOM，不是文件**
+
+### 分歧 4 ★★★ · 新增失败模式：`coverage-weight blindness`
+
+工具的覆盖台账：
+
+```
+候选 6699 -> 读到 841 -> 真正跑正则 645
+!! 因技术原因未覆盖 1 项：大文件 1
+```
+
+**"未覆盖 1 项" 听起来微不足道。但那 1 项是 33.1 MB**，
+而工具实际看到的全部只有 **约 168 KB**。
+
+> **「1 项未覆盖」与「7 项未覆盖」在报告里看起来差不多，
+> 但一个可能是无关紧要的文件，另一个可能是 99.5% 的实现逻辑。**
+>
+> **`coverage-weight blindness`：覆盖缺口的计数不体现权重。**
+
+- `direction` = **`understate`**（低估了缺口的严重性）
+- `class` = **`coverage accounting failure`** ← **新 failure class**
+- `structural` = `none`
+
+### 分歧 5 ★★★ · 「因覆盖不足而侥幸避免误报」
+
+工具对 opencode 只报 medium 级，而 S1/S2 都是 CRITICAL。
+**但 opencode 不是更干净——是它 99.5% 的代码没被扫到。**
+
+> 如果工具真的读了那 33 MB（里面有完整的 `Database` / `Server` / `Config`，
+> 以及 155 处 `fetch(`、11 处 `setInterval`、大量 schema 定义），
+> **很可能产生更多误报**。
+>
+> **它是靠"看不见"而显得更准的。**
+
+- `direction` = `understate`（**看似保守，实则是覆盖缺口造成的假象**）
+- `class` = `coverage accounting failure`
+- 这是分歧 4 的**后果**，不是独立问题，但必须单独记录 —— 因为它会造成
+  **"覆盖越差 → 报得越保守 → 看起来越可信"** 的**逆向激励**。
+
+## Failure Class 汇总（S3）
+
+| 分歧 | direction | class | structural |
+|---|---|---|---|
+| 1 凭据访问（语法模板/点文件/key 多义）| `wrong-semantics` | `semantic-role confusion` ×3 新形态 | none |
+| 2 对象存储（BSL 模板/FormData）| `wrong-semantics` | `semantic-role confusion` ×2 新形态 | none |
+| 3 批量打包（FS 遍历/DOM 遍历）| `wrong-semantics` | `semantic-role confusion` ×2 新形态 | none |
+| 4 覆盖缺口不体现权重 | `understate` | **`coverage accounting`** ← 新 | none |
+| 5 侥幸避免误报 | `understate` | `coverage accounting`（后果）| none |
+
+## `semantic-role confusion` 形态累计（**关键证据**）
+
+| 样本 | 新形态 |
+|---|---|
+| S1 | `denylist`（`new Set`）· CSP `allowlist` |
+| S2 | `detector rule` · SDK 数据结构 · UI props |
+| S3 | 语法高亮模板 · 点文件清单 · **`key` 一词多义** · BSL 语言模板 · `FormData` API · 合法 FS 遍历 · DOM 遍历 |
+
+**三种完全不同的软件，12 种语义载体，1 个根因。**
+
+> 这已经不是"某个正则写得不好"，而是 **`lexical evidence is insufficient
+> to infer semantic role`** —— 词法证据不足以推断语义角色。
+> **该结论现在有 3/3 的样本支撑。**
+
+## Novel Failure Mode 计数（按新指标）
+
+```
+Root-cause novelty
+  S1 = 4   semantic-role / pattern / evidence dilution / evidence aggregation
+  S2 = 1   library-source contamination
+  S3 = 1   coverage accounting
+
+Manifestation novelty
+  semantic-role confusion:  S1=2  S2=3  S3=7   （累计 12，1 个根因）
+  coverage accounting:       S3=2（缺口不体现权重 / 侥幸避免误报）
+```
+
+**`systemic_candidate` 标记**：
+
+| 发现 | 状态 |
+|---|---|
+| `semantic-role confusion` | ✅ **systemic，3/3 样本，12 种形态** |
+| `evidence aggregation`（understate）| ✅ **systemic，2/2 样本，2 种结构类型** |
+| `library-source contamination` | ⏳ S2 单次，待验证 |
+| `coverage accounting` | ✅ **systemic，S3 单样本内已出现两个后果** |
+| `evidence dilution` | ⏳ S1 单次，待验证 |
+
+## Action
+
+| 分歧 | Action |
+|---|---|
+| 1~3 误报 | **Need More Evidence**（形态多样性已足够，但要 S4 确认；**仍不修**）|
+| 4 覆盖权重 | **Need More Evidence** |
+| 5 侥幸保守 | **Need More Evidence** |
+
+**本轮仍不产生 Fix。冻结继续。**
+
+> **⚠ 采样污染（累积）**：我现在已经知道 semantic-role confusion 的 12 种形态。
+> S4 的人工分析必然受此影响。**此后的"新形态"其独立性递减**，记录时必须标注。 —— 后续样本应观察该值是否下降。
