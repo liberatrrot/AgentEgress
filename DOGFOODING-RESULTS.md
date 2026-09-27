@@ -1020,6 +1020,302 @@ Manifestation novelty
 
 ---
 
+# S4 的重新定标（S4 之后，按老大的拆解）
+
+## 一、S4 真正证明的不是「对非标准实现系统性失明」
+
+而是：**AgentEgress 存在三种完全不同的漏检机制，不能用同一种技术修复。**
+
+| B 类 | 工具表现 | 本质 | 归因 |
+|---|---|---|---|
+| 工作区全量快照 | **0 命中** | 检测 primitive 缺失 / 表示差异 | **B1 Discovery failure** |
+| 信封加密 | **1 命中但 absent** | 有 primitive，证据不足以跨阈值 | **B2 Evidence normalization failure** |
+| 遥测上报 | **48 命中但 absent** | 大量低权重证据被评分体系压没 | **B3 Evidence calibration failure** |
+
+> **`non-canonical-implementation gap` 这个名字下早了。**
+> 只有「0 命中」那一条才配叫 discovery gap。
+> 另两条是 **Discovery succeeded; classification / calibration failed**。
+
+## 二、Pipeline 形式化（这是 S4 最该留下的东西）
+
+```
+source code
+    ↓
+ detection          ← S1/S2 主要攻击这里（semantic-role confusion）
+    ↓
+raw evidence
+    ↓
+evidence typing     ← S1/S2 的 library-source contamination / UI props
+    ↓
+aggregation         ← S4 攻击：48 hits 被压成 score 1.48
+    ↓
+scoring             ← S4 攻击：1 hit 够不到 possible 阈值
+    ↓
+verdict
+```
+
+**S1/S2 攻击 `detection → evidence typing`；S4 第一次攻击 `evidence → aggregation → scoring`。**
+
+## 三、核心架构结论
+
+> **从源代码到安全结论的中间表示太贫乏。**
+
+不是"正则少了几个"。两侧边界现在都暴露出来了：
+
+```
+                    true state
+                        │
+            ┌───────────┴───────────┐
+            ↓                       ↓
+     overstatement            understatement
+            │                       │
+  lexical semantic role      B1 discovery（完全没看见）
+  provenance contamination   B2 normalization（看见了但表示不足）
+  evidence dilution          B3 calibration（看见很多但被压没）
+```
+
+## 四、必须修正我上一条消息的推论
+
+我说过"如果对非标准实现系统性失明，Layer 1/2 可能救不了"。**这个逻辑要改**：
+
+| 层 | 能否解决 discovery gap | 说明 |
+|---|---|---|
+| Layer 1（semantic role）| ❌ **不能** | 它解决的是 `new Set(["id_rsa"])` 是 denylist 还是 read target，对"完全未知的 crypto API"无能为力 |
+| Layer 2（structural relation）| ❌ 不能单独解决 | 若 `createMedia` 根本未被识别为 relevant source，后面没有 structural evidence 可分析 |
+
+**但这不等于 Layer 1/2 没价值。它们是互补的，不是替代关系：**
+
+```
+Layer 0  lexical discovery      ← B1 的瓶颈在这里
+Layer 1  semantic role          ← 解决 semantic-role confusion
+Layer 2  structural relation    ← 解决 understate
+Layer 3  reachability
+```
+
+## 五、H4 改名
+
+```
+旧：Low file coverage can create false reassurance          ← 被 S4 证伪
+新：Technical coverage loss can create false reassurance
+```
+
+因为 S4 已证明 `low file coverage ≠ low technical coverage`
+（97% 是 node_modules 的设计内跳过，不是技术性不可见）。
+
+## 六、S5 的任务定义（升级为诊断实验）
+
+**S5 不再是"跑第五个软件"，而是 S4 的实验性反事实验证器。**
+
+用**正交化**的方式人为控制变量，最后得到"**哪一层缺失导致哪一种错误**"：
+
+| 实验 | lexical | semantic | structural | 测什么 |
+|---|:-:|:-:|:-:|---|
+| **E0** 标准加密 | ✓ | — | — | 基线 |
+| **E1** `customEncrypt()` / `obscureUpload()` | ✗ | — | — | **discovery gap（B1）** |
+| **E2** 标准加密 + `new Set(["id_rsa"])` | ✓ | 需要 | — | **semantic role** |
+| **E3** 标准加密 → 上传（同对象/参数流）| ✓ | ✓ | 需要 | **structural relation** |
+| **E4** ★ **非标准加密 → 上传** | ✗ | ✓? | ✓ | **structural 能否补 lexical** |
+| **E5** 48 处弱证据 | ✓ | ✓ | — | **aggregation / calibration（B2/B3）** |
+
+> **E4 价值最大。** 它可能给出三种结论之一：
+> ```
+> A. lexical discovery 是不可替代的瓶颈
+> B. 结构关系可以部分补救 lexical blindness
+> C. 两者都需要：lexical 提供候选，structural 扩展候选之间的证据关系
+> ```
+> 到那时再决定"要不要从 Layer 0 直接跳到完整 AST/CFG"才有扎实依据。
+
+---
+
+# S5 · 正交实验（S4 的反事实验证器）
+
+样本：**人为构造**的 6 个小型项目（`tests/dogfood/s5-orthogonal/`），
+每个只改变一个变量。跑的是**同一份冻结版**。
+
+## 汇总矩阵
+
+| 实验 | 分层设置 | 信封加密 | 对象存储直传 | 工作区快照 | 组合证据 |
+|---|---|---|---|---|---|
+| **E0** 基线 | lexical✓ semantic— structural— | likely | possible | absent | 0 |
+| **E1** discovery | lexical✗ | **absent** | **absent** | absent | 0 |
+| **E2** semantic | lexical✓ + denylist | likely | absent | absent | 0 |
+| **E3** structural | lexical✓ semantic✓ | likely | possible | absent | **0** |
+| **E4 ★** bridges-lexical | lexical✗ structural✓ | **absent** | **absent** | absent | **0** |
+| **E5** aggregation | 48 弱证据 | absent | **likely** | possible | 0 |
+
+## 逐条解读
+
+### E1 · discovery gap 确认：**全自造名字时完全失明**
+
+```
+E1-discovery:  （全部 absent 且零命中）
+```
+
+代码行为等价于「读工作区 → 变换 → 发出」，但**一个标准 primitive 都没用**。
+**工具零命中。** → **B1 Discovery failure 得到确认。**
+
+### ★ E4 · 最重要的一条：**structural 补不了 lexical**
+
+E4 的代码里有**非常明确的结构关系**：
+
+```js
+const sealed = obscureSeal(Buffer.from(files.join('\n')));   // 自造"加密"
+return shipSealed({
+  apex: apex,
+  payload: sealed.sealedBlob,      // ← 同一对象字面量内引用
+  bytes: sealed.sealedSize,
+  meta: sealed.algo,
+});
+```
+
+**结果**：
+
+```
+E4-structural-bridges-lexical:  （全部 absent 且零命中）
+组合证据: 无
+```
+
+> **结论：`structural analysis` 无法补救 `lexical blindness`。**
+>
+> 原因是**结构关系本身也是靠词法建立的** ——
+> 工具必须先认出 `obscureSeal` 是个"加密类函数"，才能建立
+> "它的返回值进了上传参数"这个关系。
+> **如果第一步就是零命中，第二步没有任何东西可以关联。**
+>
+> **lexical discovery 是前置条件，不是可选项。**
+
+**这回答了 E4 提出的三选一：答案是 A。**
+
+```
+A. lexical discovery 是不可替代的瓶颈        ← ✅ 实测结果
+B. 结构关系可以部分补救 lexical blindness     ← ❌ 被 E4 证伪
+C. 两者都需要（lexical 提供候选，structural 扩展关系） ← 部分成立，
+                                                        但顺序是硬性的
+```
+
+**层级依赖关系因此是硬依赖，不是互补替代：**
+
+```
+Layer 0  lexical discovery      ← 必须先行；E1/E4 证明它是瓶颈
+   ↓ （只有 discovery 成功的候选才能进入下一层）
+Layer 1  semantic role
+   ↓
+Layer 2  structural relation
+   ↓
+Layer 3  reachability
+```
+
+### E2 · semantic role 问题仍在，只是这次没跨过阈值
+
+```
+credential_access  absent  2.58  0.0890  3模式 1文件 4命中
+```
+
+`NEVER_INCLUDE`（明确的排除集合）**仍被算作 credential 证据**（4 命中 / 3 模式），
+只是 `norm 0.0890` **低于 possible 阈值 0.12**，所以判 `absent`。
+
+> **问题是真实的**，这次只是**样本太小、证据量不够**才没暴露成误报。
+> 阈值一旦被证据量推过 0.12，同样的代码就会变成误报 —— 这个"侥幸"值得记住。
+
+### E3 · 结构关系写得再明确，工具也表达不出来
+
+```
+envelope_encryption    likely    13.90  0.2837  2模式 1文件 3命中
+object_storage_upload  possible   7.04  0.1467  1模式 1文件 2命中
+组合证据: 无
+```
+
+E3 的 `artifact.encryptedSizeBytes` → `req.contentLength` 是**同一对象字面量内的字段引用**
+（与 S1 ZCode 完全同型）。但**工具输出 0 条组合证据**。
+
+**原因**：组合链要求各环节都达 `likely`，而 `object_storage_upload` 只有 `possible`。
+
+> 这暴露了 **calibration 的尺度依赖**：阈值是固定常数，但可达的证据量随样本规模变化。
+> **S1/S2 之所以能报出组合，是因为样本够大（33MB / 80MB）；小样本永远凑不齐。**
+
+### E5 · aggregation 问题的另一面（与 S4 相反的方向）
+
+E5 的代码里**只有文档字符串和日志**，没有任何实际能力：
+
+```js
+const DOC = `
+telemetry: 本模块会上报 telemetry 事件（仅统计用途）
+x-oss-signature: 文档里的字段名示例，未实现
+aliyuncs.com: 文档中提到的域名，不用于任何请求
+...`;
+
+function log(msg) { /* telemetry telemetry telemetry —— 只是日志，不上报 */ }
+```
+
+**结果**：
+
+```
+object_storage_upload  likely    12.72  0.2650  2模式 1文件 3命中   ← 误报
+workspace_snapshot     possible   7.48  0.1558  1模式 1文件 1命中
+telemetry_egress       possible   3.74  0.1626  1模式 1文件 2命中
+```
+
+**纯注释 + 日志 → 被判 `likely` + 两个 `possible`。**
+
+> **与 S4 的遥测（48 命中 → absent）方向完全相反**：
+> ```
+> S4 遥测:  48 命中  → score 1.48  → absent   （压没）
+> E5 文档:   3 命中  → score 12.72 → likely   （报高）
+> ```
+> **同一个 aggregation/scoring 层，在两个方向上都会出错。**
+> 说明问题不在"阈值调高或调低"，而在**评分的量纲不对**——
+> 命中数、模式数、文件数被线性组合，却在不同样本规模下产生相反效果。
+
+## S5 的结论
+
+**这是 Phase 1 唯一一次由"构造实验"给出的结论，而非观察真实样本。**
+
+它把架构问题从模糊的"要不要上 data-flow"变成了有依据的判断：
+
+```
+① lexical discovery 是硬前置条件（E1/E4）
+   → 任何"先做结构分析"的路线都不成立
+
+② semantic role 与 aggregation/calibration 是 Discovery 之后的独立问题（E2/E5）
+   → 但它们的修复不能替代 discovery
+
+③ 组合链的 likely 阈值存在尺度依赖（E3/E0）
+   → 小样本永远报不出组合，大样本才可能
+```
+
+**因此下一步优先级（有证据支撑）：**
+
+```
+P0  discovery 的覆盖方式（当前 56 个 pattern 是词表白名单）
+     —— 这是唯一的硬瓶颈
+P1  aggregation / calibration 的量纲问题（E5 与 S4 的反向错误）
+P2  semantic role（E2、S1/S2/S3 的 14 种形态）
+P3  structural relation（E3；它有价值，但必须在 P0 成立之后）
+```
+
+> **注意：这仍然不是"批准上 data-flow"。**
+> S5 说的是 **discovery 是瓶颈**，而 discovery 的改进方向**可能不是** data-flow
+> ——它可能只是"更宽的实现识别"（例如按行为特征而非 API 名识别）。
+> **具体走哪条路，需要在 Phase 1 收尾时单独决定。**
+
+---
+
+## Phase 1 矩阵（S1–S5 完整版）
+
+| Root cause | S1 | S2 | S3 | S4 | S5 | 独立性 | 状态 |
+|---|:-:|:-:|:-:|:-:|:-:|---|---|
+| semantic-role confusion | ✓ | ✓ | ✓ | ✓ | ✓(E2) | 受污染 | systemic candidate |
+| evidence aggregation（understate）| ✓ | ✓ | — | — | ✓(E4) | 较高 | systemic candidate |
+| library-source contamination | — | ✓ | ? | — | — | 中 | pending |
+| evidence dilution | ✓ | — | — | ✓ | — | 中 | pending |
+| coverage accounting | — | — | ✓ | ✓ | — | 较高 | **已修正判据** |
+| coverage-induced false reassurance | — | — | ✓ | ✗ | — | 较低 | 单次 |
+| **B1 discovery failure** | — | — | — | ✓ | ✓ | **高（构造实验）** | **systemic** |
+| **B2 normalization failure** | — | — | — | ✓ | ✓(E2) | 较高 | systemic candidate |
+| **B3 calibration failure** | — | — | — | ✓ | ✓(E5) | **高（双向）** | **systemic** |
+
+---
+
 # S4 · 夸克网盘 7.3.5.810
 
 **样本变更**：原计划的 Kimi / Cursor 不可用。扫描全盘后从候选人里选夸克网盘：

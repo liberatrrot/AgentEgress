@@ -1,0 +1,362 @@
+{
+  "E0-baseline": {
+    "name": "E0-baseline",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 2,
+      "prefilter_rejected": 0,
+      "candidates": 2
+    },
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "norm": 0.2837,
+        "patterns": 2,
+        "files": 1,
+        "hits": 2
+      },
+      "object_storage_upload": {
+        "level": "possible",
+        "score": 7.04,
+        "norm": 0.1467,
+        "patterns": 1,
+        "files": 1,
+        "hits": 2
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "credential_access": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "bulk_archive": {
+        "level": "absent",
+        "score": 3.52,
+        "norm": 0.1173,
+        "patterns": 1,
+        "files": 1,
+        "hits": 2
+      },
+      "telemetry_egress": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      }
+    },
+    "chains": []
+  },
+  "E1-discovery": {
+    "name": "E1-discovery",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1,
+      "candidates": 2
+    },
+    "caps": {
+      "envelope_encryption": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "credential_access": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "bulk_archive": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "telemetry_egress": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      }
+    },
+    "chains": []
+  },
+  "E2-semantic": {
+    "name": "E2-semantic",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1,
+      "candidates": 2
+    },
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "norm": 0.2837,
+        "patterns": 2,
+        "files": 1,
+        "hits": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "credential_access": {
+        "level": "absent",
+        "score": 2.58,
+        "norm": 0.089,
+        "patterns": 3,
+        "files": 1,
+        "hits": 4
+      },
+      "bulk_archive": {
+        "level": "absent",
+        "score": 0.53,
+        "norm": 0.0177,
+        "patterns": 1,
+        "files": 1,
+        "hits": 2
+      },
+      "telemetry_egress": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      }
+    },
+    "chains": []
+  },
+  "E3-structural": {
+    "name": "E3-structural",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1,
+      "candidates": 2
+    },
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "norm": 0.2837,
+        "patterns": 2,
+        "files": 1,
+        "hits": 3
+      },
+      "object_storage_upload": {
+        "level": "possible",
+        "score": 7.04,
+        "norm": 0.1467,
+        "patterns": 1,
+        "files": 1,
+        "hits": 2
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "credential_access": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "bulk_archive": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "telemetry_egress": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      }
+    },
+    "chains": []
+  },
+  "E4-structural-bridges-lexical": {
+    "name": "E4-structural-bridges-lexical",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1,
+      "candidates": 2
+    },
+    "caps": {
+      "envelope_encryption": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "credential_access": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "bulk_archive": {
+        "level": "absent",
+        "score": 3.52,
+        "norm": 0.1173,
+        "patterns": 1,
+        "files": 1,
+        "hits": 2
+      },
+      "telemetry_egress": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      }
+    },
+    "chains": []
+  },
+  "E5-aggregation": {
+    "name": "E5-aggregation",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1,
+      "candidates": 2
+    },
+    "caps": {
+      "envelope_encryption": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "object_storage_upload": {
+        "level": "likely",
+        "score": 12.72,
+        "norm": 0.265,
+        "patterns": 2,
+        "files": 1,
+        "hits": 3
+      },
+      "workspace_snapshot": {
+        "level": "possible",
+        "score": 7.48,
+        "norm": 0.1558,
+        "patterns": 1,
+        "files": 1,
+        "hits": 1
+      },
+      "credential_access": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "bulk_archive": {
+        "level": "absent",
+        "score": 0.0,
+        "norm": 0.0,
+        "patterns": 0,
+        "files": 0,
+        "hits": 0
+      },
+      "telemetry_egress": {
+        "level": "possible",
+        "score": 3.74,
+        "norm": 0.1626,
+        "patterns": 1,
+        "files": 1,
+        "hits": 2
+      }
+    },
+    "chains": []
+  }
+}
