@@ -1266,37 +1266,165 @@ telemetry_egress       possible   3.74  0.1626  1模式 1文件 2命中
 > 说明问题不在"阈值调高或调低"，而在**评分的量纲不对**——
 > 命中数、模式数、文件数被线性组合，却在不同样本规模下产生相反效果。
 
-## S5 的结论
+## S5 的结论（**已按 S5 后的裁判修正**）
 
 **这是 Phase 1 唯一一次由"构造实验"给出的结论，而非观察真实样本。**
 
-它把架构问题从模糊的"要不要上 data-flow"变成了有依据的判断：
+### 修正 ① P0 的表述被降级了
 
 ```
-① lexical discovery 是硬前置条件（E1/E4）
-   → 任何"先做结构分析"的路线都不成立
-
-② semantic role 与 aggregation/calibration 是 Discovery 之后的独立问题（E2/E5）
-   → 但它们的修复不能替代 discovery
-
-③ 组合链的 likely 阈值存在尺度依赖（E3/E0）
-   → 小样本永远报不出组合，大样本才可能
+旧（我的）：P0 = 扩充 56 个 pattern 白名单，因为 discovery 是唯一硬瓶颈
+新（修正后）：
+  P0 = 建立「行为级 discovery coverage」
+       验证工具能否从「API 名称识别」升级到「行为特征识别」
 ```
 
-**因此下一步优先级（有证据支撑）：**
+E4 证明的是 **`lexical discovery = 0 → structural analysis 无输入`**，
+即**层级依赖存在**。但它**没有证明当前的 56 pattern 是 discovery 的正确最终形态**。
+
+### 修正 ②：三个结论要分开，且 E3 被我低估了
+
+**E4 的结论（干净，保留）**
+
+给出了 `semantic relation ✓ / object relation ✓ / upload relation ✓`，
+但 `obscureSeal = unknown` → 第一阶段没建立 capability evidence
+→ **没有 lexical/behavioral candidate，后面的结构层没有入口。**
+**这是真正的架构约束，不是评分问题。**
+
+**★ E3 是 S5 最重要的「隐藏结果」（我之前当成了 calibration 尺度依赖，低估了）**
+
+E3 的 `artifact.encryptedSizeBytes → req.contentLength` 与 **S1 ZCode 同型**，
+但 object storage 只有 `possible`，组合链不成立。
+
+> 这意味着 `evidence existence` 与 `chain eligibility` 之间存在
+> **很强的离散阈值断裂**：
+> ```
+> possible  0.29  →  「没有组合链」
+> likely    0.30  →  「阻断级组合链」
+> ```
+> 而底层代码事实**几乎没有变化**。
+>
+> **这比"阈值可能不合理"严重** —— 它意味着：
+> **结构证据一旦进入组合引擎，会被上游的等级离散化提前截断。**
+
+**E5 的表述要更精确**
 
 ```
-P0  discovery 的覆盖方式（当前 56 个 pattern 是词表白名单）
-     —— 这是唯一的硬瓶颈
-P1  aggregation / calibration 的量纲问题（E5 与 S4 的反向错误）
-P2  semantic role（E2、S1/S2/S3 的 14 种形态）
-P3  structural relation（E3；它有价值，但必须在 P0 成立之后）
+我的原话：问题不在阈值高低，而是量纲不对
+修正后：当前 scoring aggregation 混合了「证据强度 / 证据数量 / 证据来源 / 类别权重」，
+        它们没有统一的可解释语义。
+```
+「更多 evidence ≠ 更强 verdict」本身不是 bug（安全评分本就该考虑 evidence quality）。
+**真正的问题是：没有可解释、稳定、跨证据类型一致的质量维度。**
+
+### 修正 ③：状态标签要降级（不能靠实验外推真实世界）
+
+```
+B1 Discovery failure
+  Status: confirmed architectural limitation
+          real-world prevalence: unknown          ← 不能说 systemic
+               （S4 真实软件 + S5 构造实验都出现 → 机制确实存在，
+                 但不足以证明它在真实世界软件中的普遍率）
+
+B3 Calibration failure
+  Status: confirmed architectural issue
+          real-world error distribution: unknown
 ```
 
-> **注意：这仍然不是"批准上 data-flow"。**
-> S5 说的是 **discovery 是瓶颈**，而 discovery 的改进方向**可能不是** data-flow
-> ——它可能只是"更宽的实现识别"（例如按行为特征而非 API 名识别）。
-> **具体走哪条路，需要在 Phase 1 收尾时单独决定。**
+**同理 `semantic-role confusion` 也该收尾了**：
+
+14 种表现、1 个根因 —— **再找第 15 个的边际价值已很低**。
+下一步不该问"还能不能找到第 15 种"，而该问：
+
+> **「加入最小的 syntactic role / provenance 信息后，误报率能下降多少？」**
+
+→ **它应该进入修复阶段，而不是继续 discovery。**
+
+## P0 Discovery Boundary Matrix（本轮唯一要做的实验）
+
+**不做"再造 20 个奇怪写法"**（那会变成 pattern whack-a-mole），
+而是**同一行为、逐级替换表达形式**：
+
+```
+D0  标准 API
+D1  自定义 wrapper（内部仍调标准 API）
+D2  wrapper + 常规 API
+D3  完全自定义 primitive
+D4  字符串拼接 API 名
+D5  动态属性调用（obj[expr](...)）
+D6  注册表 / 配置驱动
+D7  间接 import / alias
+D8  库封装层
+```
+
+**每个都不只记 detected/absent，而记四层**：
+
+```
+lexical hit · semantic candidate · structural candidate · final verdict
+```
+
+### 两组关键控制组（**不能只测 Recall**）
+
+**控制组 A：same behavior, different spelling** ← 即 D0–D8
+
+**控制组 B：different behavior, same spelling** ← **极重要**
+
+```
+createCipheriv(...) 可能是：
+  A. 真正加密用户数据
+  B. 测试代码
+  C. 本地缓存加密
+  D. SDK 内部实现
+```
+
+> 如果 `same spelling / different semantics` 仍被大量判为同一种 capability，
+> 就直接测出了 **P0 的问题不只是 Recall，还有 semantic precision**。
+
+### Transformation Invariance（新增，之前没测）
+
+同一真实能力（`workspace → encrypt → upload`）的语义等价版本：
+
+```
+V0 direct · V1 wrapper · V2 renamed · V3 helper split
+V4 reordered · V5 minified · V6 alias · V7 function-pointer
+```
+
+理想：**语义不变 → detection 不应崩塌**。
+
+> 这定义一个 **Behavioral invariance test**：
+> 「代码换一种写法，AgentEgress 是否仍看到同一个能力？」
+> 这才是 discovery quality 的真正度量。
+
+## Phase 1 的收尾标准（已明确）
+
+**不再以"有没有把所有 bug 挖完"为标准**（不可能挖完），而是：
+
+> **我们是否已经知道现有架构在哪些机制层面必然失效，以及下一阶段要解决哪个瓶颈。**
+
+当前已经清楚：
+
+```
+Layer 0  Discovery                    ← 必须存在（E4 证明）
+Layer 1  Semantic role                ← 当前严重不足
+Layer 2  Structural evidence          ← 当前无法表达（E3 揭示截断）
+Layer 3  Reachability / data-flow     ← 尚未证明必须
+
+横切层   Evidence → Aggregation / Calibration   ← 不属于 Layer 0–3，贯穿其上
+```
+
+**收尾产出**：`PHASE-1-ARCHITECTURE-DECISION.md`，回答五个问题：
+
+```
+1. Discovery 的真实边界在哪里？
+2. Semantic role 是否值得独立成为 evidence layer？
+3. Structural evidence 最小需要什么表达能力？
+4. Calibration / aggregation 应如何与 detection 解耦？
+5. 下一阶段走哪条：A 更好的行为级 discovery / B evidence model 重构 /
+                   C 轻量结构解析 / D 完整静态数据流
+```
+
+> **不要现在决定 D。** S5 已经证明 **`data-flow` 不能替代 discovery**，
+> 但它还没有证明 **`data-flow` 值不值得做**。**这两句话必须严格分开。**
 
 ---
 
@@ -1313,6 +1441,95 @@ P3  structural relation（E3；它有价值，但必须在 P0 成立之后）
 | **B1 discovery failure** | — | — | — | ✓ | ✓ | **高（构造实验）** | **systemic** |
 | **B2 normalization failure** | — | — | — | ✓ | ✓(E2) | 较高 | systemic candidate |
 | **B3 calibration failure** | — | — | — | ✓ | ✓(E5) | **高（双向）** | **systemic** |
+
+---
+
+# P0 · Discovery Boundary Matrix（结果）
+
+样本：`tests/dogfood/p0-boundary/`，21 个，**同一版本冻结**。
+
+## D 组 · 同行为 / 逐级替换表达形式
+
+| 样本 | 写法 | lexical | 信封加密 | 判定 |
+|---|---|---|---|---|
+| d0-standard | 标准 API 直调 | 4 | **likely** | ✅ |
+| d1-wrapper | 自造 wrapper（内部仍调标准 API）| 4 | **likely** | ✅ |
+| d2-wrapper-partial | wrapper + 部分直调 | 4 | **likely** | ✅ |
+| **d3-custom-primitive** | **完全自定义 primitive** | 2 | **absent** | ❌ **首次失效** |
+| d4-string-built-name | 字符串拼接 API 名 | 3 | possible | ⚠ 降级 |
+| d5-dynamic-property | 动态属性调用 | 3 | possible | ⚠ 降级 |
+| d6-registry-driven | 注册表 / 配置驱动 | 3 | possible | ⚠ 降级 |
+| d7-alias | 间接 import / alias | 4 | **likely** | ✅ |
+| d8-lib-encapsulated | 库封装层 | 4 | **likely** | ✅ |
+
+**D 组的边界结论**：
+
+```
+只有「完全自定义 primitive」（代码里一个标准词都没有）才真正失效。
+部分混淆（字符串拼接 / 动态属性 / 注册表）→ 降级到 possible，但仍然可见。
+alias 与库封装完全不受影响。
+```
+
+> **这修正了 S5 的印象**：E1/E4 之所以零命中，是因为它们**连 `'aes-256-gcm'` 这种
+> 算法名都换掉了**。真实世界的混淆很少这么彻底 —— **discovery 的边界比我以为的宽**。
+
+## ★★ B 组 · same spelling / different behavior —— **本轮最重要的发现**
+
+| 样本 | 真实语义 | 信封加密 | 命中 | verdict |
+|---|---|---|---|---|
+| **b1-real-user-data** | **真加密用户数据并外发** | likely | 4 | low |
+| b2-test-only | 只在测试代码里加密，生产不外发 | **likely** | 4 | low |
+| b3-local-cache-only | 加密后写本地文件，**不联网** | **likely** | 4 | low |
+| b4-sdk-internal | 通用工具函数（无外发） | possible | 3 | low |
+
+> **四者结论几乎完全相同。b1（真外发）与 b2/b3（完全不外发）判得一模一样。**
+
+**这直接测出了你预判的那件事**：
+
+> **P0 的问题不只是 Recall，还有 semantic precision。**
+> `same spelling / different semantics` → **当前无法区分。**
+
+**而且它比 discovery 问题更严重**：
+```
+discovery gap  只在极端情况下出现（完全自造 primitive）
+precision gap  在日常代码里普遍存在（本地加密 / 测试代码 / SDK 工具函数到处都是）
+```
+
+## V 组 · Transformation Invariance
+
+| 变体 | 信封加密 | 命中 |
+|---|---|---|
+| v0-direct / v1-wrapper / v2-renamed / v3-helper-split | likely | 4 |
+| v4-reordered / v5-minified / v6-alias / v7-function-pointer | likely | 4 |
+
+```
+→ 同一行为的结论集合：['likely']
+→ 一致（invariance 成立）
+```
+
+**这是个正面结果**：常规写法变化（改名 / 拆分 / 重排 / 压缩 / 别名 / 函数指针）
+**不影响检出**。**agentegress 的 invariance 是好的。**
+
+## P0 的三个结论
+
+```
+① Discovery 边界       比预期宽：只有「零标准词」才失效；部分混淆降级但可见
+② Semantic precision   严重不足：真外发 / 本地加密 / 测试代码 无法区分  ← 最严重
+③ Transformation invariance  成立：常规写法变化不影响
+```
+
+**因此 P0 的定义要再修一次**：
+
+```
+旧：P0 = 建立「行为级 discovery coverage」（解决 Recall）
+新：P0 = 建立「行为级 discovery coverage」+「行为级 discrimination」
+         —— 前者是 Recall，后者是 Precision，两者是同一个问题的两面
+```
+
+> **注意 ② 的含义**：`createCipheriv` 出现在代码里，**不等于**"这个程序在加密用户数据外传"。
+> 它可能只是本地缓存加密、只在测试里用、或是 SDK 的工具函数。
+> **当前证据模型没有表达"这个加密作用于什么数据、流向哪里"的槽位。**
+> 这与 S1/S2 的 `evidence aggregation`（没有槽位）是**同一个病根的不同侧面**。
 
 ---
 

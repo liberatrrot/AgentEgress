@@ -1,0 +1,735 @@
+{
+  "d0-standard": {
+    "name": "d0-standard",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 4,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "hits": 2,
+        "patterns": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "d1-wrapper": {
+    "name": "d1-wrapper",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 4,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "hits": 2,
+        "patterns": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "d2-wrapper-partial": {
+    "name": "d2-wrapper-partial",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 4,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "hits": 2,
+        "patterns": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "d3-custom-primitive": {
+    "name": "d3-custom-primitive",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 2,
+    "non_absent": [],
+    "caps": {
+      "envelope_encryption": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "info"
+  },
+  "d4-string-built-name": {
+    "name": "d4-string-built-name",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 3,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "possible",
+        "score": 5.98,
+        "hits": 1,
+        "patterns": 1
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "d5-dynamic-property": {
+    "name": "d5-dynamic-property",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 3,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "possible",
+        "score": 5.98,
+        "hits": 1,
+        "patterns": 1
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "d6-registry-driven": {
+    "name": "d6-registry-driven",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 3,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "possible",
+        "score": 5.98,
+        "hits": 1,
+        "patterns": 1
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "d7-alias": {
+    "name": "d7-alias",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 4,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "hits": 2,
+        "patterns": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "d8-lib-encapsulated": {
+    "name": "d8-lib-encapsulated",
+    "meta": {
+      "files_scanned": 3,
+      "files_analyzed": 2,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 4,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "hits": 2,
+        "patterns": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "b1-real-user-data": {
+    "name": "b1-real-user-data",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 4,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "hits": 2,
+        "patterns": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "b2-test-only": {
+    "name": "b2-test-only",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 4,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "hits": 2,
+        "patterns": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "b3-local-cache-only": {
+    "name": "b3-local-cache-only",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 4,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "hits": 2,
+        "patterns": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "b4-sdk-internal": {
+    "name": "b4-sdk-internal",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 3,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "possible",
+        "score": 7.92,
+        "hits": 1,
+        "patterns": 1
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "v0-direct": {
+    "name": "v0-direct",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 4,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "hits": 2,
+        "patterns": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "v1-wrapper": {
+    "name": "v1-wrapper",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 4,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "hits": 2,
+        "patterns": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "v2-renamed": {
+    "name": "v2-renamed",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 4,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "hits": 2,
+        "patterns": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "v3-helper-split": {
+    "name": "v3-helper-split",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 4,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "hits": 2,
+        "patterns": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "v4-reordered": {
+    "name": "v4-reordered",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 4,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "hits": 2,
+        "patterns": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "v5-minified": {
+    "name": "v5-minified",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 4,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "hits": 2,
+        "patterns": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "v6-alias": {
+    "name": "v6-alias",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 4,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "hits": 2,
+        "patterns": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  },
+  "v7-function-pointer": {
+    "name": "v7-function-pointer",
+    "meta": {
+      "files_scanned": 2,
+      "files_analyzed": 1,
+      "prefilter_rejected": 1
+    },
+    "lexical_hit": 4,
+    "non_absent": [
+      "envelope_encryption"
+    ],
+    "caps": {
+      "envelope_encryption": {
+        "level": "likely",
+        "score": 13.9,
+        "hits": 2,
+        "patterns": 2
+      },
+      "object_storage_upload": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      },
+      "workspace_snapshot": {
+        "level": "absent",
+        "score": 0.0,
+        "hits": 0,
+        "patterns": 0
+      }
+    },
+    "chains": 0,
+    "blocking": 0,
+    "verdict": "low"
+  }
+}
