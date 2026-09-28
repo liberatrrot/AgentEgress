@@ -82,12 +82,19 @@ def lex_regions(text):
 
 _REGION_CACHE = {}
 
+# 【实测踩坑】`id(text)` 单独作键不安全 —— 对象被 GC 后 id 会被复用，
+# 于是返回**另一个文本的 regions**。
+# 同类 bug 在 evidence/relation.py 里也出现过（批量回放时 relation 凭空建不出来）。
+_REGION_CACHE_MAX = 4
+
 
 def region_at(text, pos):
-    key = id(text)
+    key = (id(text), len(text))
     segs = _REGION_CACHE.get(key)
     if segs is None:
         segs = lex_regions(text)
+        if len(_REGION_CACHE) >= _REGION_CACHE_MAX:
+            _REGION_CACHE.clear()
         _REGION_CACHE[key] = segs
     for s, e, k in segs:
         if s <= pos < e:

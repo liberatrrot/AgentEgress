@@ -74,12 +74,22 @@ def lex_regions(text):
 
 _REGION_CACHE = {}
 
+# 【实测踩坑】第一版用 `id(text)` 单独作缓存键。
+# Python 的对象 id 在对象被 GC 后**会被复用** ——
+# 前一个文本被回收后，新文本可能拿到相同 id，
+# 于是 region_at 返回**另一个文件的 regions**，导致 relation 凭空建不出来。
+# 现象：单独 debug 能建出 relation，但在批量回放里同一段代码判为 None。
+# 修法：键改成 (id, len)，并限制缓存条数。
+_REGION_CACHE_MAX = 4
+
 
 def region_at(text, pos):
-    key = id(text)
+    key = (id(text), len(text))
     segs = _REGION_CACHE.get(key)
     if segs is None:
         segs = lex_regions(text)
+        if len(_REGION_CACHE) >= _REGION_CACHE_MAX:
+            _REGION_CACHE.clear()
         _REGION_CACHE[key] = segs
     for s, e, k in segs:
         if s <= pos < e:
