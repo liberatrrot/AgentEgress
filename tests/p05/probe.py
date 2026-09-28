@@ -469,3 +469,79 @@ def probe(text, token, occurrence=0):
 
     # ---------- 无足够依据：不硬猜 ----------
     return mk("unknown", "low", "无精确消费点，且不做窗口猜测")
+
+
+# ================================================================ 封存接口
+#
+# 【为什么有这一段】
+# P0.5 实测：全量 79 条命中里只有 14% 拿到 role，且其中 precision 也不够高。
+# 所以按 Phase 2 决定，use-site **降级为 optional evidence enrichment**：
+#
+#   probe()  →  RoleEvidence（不直接改 semantic_role）
+#                   ↓
+#              admission rule（严格三条件）
+#                   ├── 通过 → semantic_role = <候选值>，status = observed
+#                   └── 不通过 → 留在 evidence pool，不污染核心判断
+#
+# 这样避免"手挑 case 漂亮、全量覆盖差"的能力进入核心判断链。
+
+# 允许晋升的 role —— 其余一律留在 evidence pool
+ADMISSIBLE_ROLES = {"denylist", "detection_rule", "documentation",
+                    "active_operation"}
+
+# 允许作为 basis 的置信度下限
+MIN_ADMISSION_CONFIDENCE = {"medium", "high"}
+
+
+def to_role_evidence(res):
+    """把 probe() 的结果转成 RoleEvidence（不修改任何 semantic_role）。"""
+    return {
+        "role_candidate": res["role"] if res["role"] != "unknown" else None,
+        "basis": [res["reason"]] if res["reason"] else [],
+        "confidence": res["confidence"],
+        "container": res.get("container"),
+        "consumer_kinds": res.get("consumer_kinds") or [],
+        "name_signals": [s["func"] for s in (res.get("name_signals") or [])],
+        "region": res.get("region"),
+    }
+
+
+def admit(role_evidence):
+    """准入规则：三条同时满足才允许晋升到 semantic_role。
+
+    ① 有确定的 basis（不是"附近出现过某 API"这一类弱依据）
+    ② basis 来自同一文件内的结构事实（本实现天然满足 —— 全在单文件内）
+    ③ role 属于已实测可靠的四类，且 confidence ≥ medium
+
+    返回 (admitted: bool, reason: str)
+    """
+    rc = role_evidence.get("role_candidate")
+    conf = role_evidence.get("confidence")
+    basis = role_evidence.get("basis") or []
+
+    if not rc:
+        return False, "无 role 候选（保持 unknown 是正常状态）"
+    if not basis:
+        return False, "缺少 basis"
+    if conf not in MIN_ADMISSION_CONFIDENCE:
+        return False, "confidence 不足（%s）—— 弱依据不晋升" % conf
+    if rc not in ADMISSIBLE_ROLES:
+        return False, "%s 不在已实测可靠的四类内" % rc
+    return True, "通过：%s / %s / basis=%d 条" % (rc, conf, len(basis))
+
+
+# 已实测可靠的四类（P0.5 的 P0.5 结论，见 PHASE-2-EVIDENCE-MODEL-DESIGN.md §四）
+RELIABLE_ROLES = {
+    "denylist":         "Set membership + 排除判定 或 命名信号",
+    "detection_rule":   "正则 + .test() + 与字段恒等比较",
+    "documentation":    "命中在注释区 / 纯日志消费",
+    "active_operation": "值进入网络或文件 sink",
+}
+
+# 正式接受 unknown
+ACCEPTED_UNKNOWN = {
+    "allowlist":          "与 denylist 在「分支在调用方」时无法区分",
+    "schema_definition":  "与普通对象字面量无法区分",
+    "ui_representation":  "同上",
+    "ambiguous_local_use": "有集合但无分支无命名 → 规则明确不硬猜",
+}

@@ -277,3 +277,102 @@ A 例之所以成，靠的是 minified 代码保留了可读函数名 looksLikeS
 而这会直接影响 `Evidence object` 的设计（`role` 字段大部分时候是 `unknown`，
 那么 `Assessment` 就不能太依赖它）。
 
+---
+
+# 八、封存验证（选乙之后补做）
+
+> **老大选乙**：把 use-site 降级为「可选的高置信辅助证据源」，
+> 不做 `semantic_role` 的必填项，也不作为评分前置。
+>
+> **因此封存前必须知道**：在**严格准入规则**下，它到底还剩多少能力？
+
+## 准入规则（三条同时满足）
+
+```
+① 有确定的 basis（不是"附近出现过某 API"）
+② basis 来自同一文件内的结构事实
+③ role 属于已实测可靠的四类，且 confidence ≥ medium
+```
+
+## 结果：**0 / 5 通过严格准入**
+
+| Case | role | conf | admitted |
+|---|---|---|---|
+| A · S1 denylist | **unknown** | low | ❌ 无 role 候选 |
+| A' · 真读取外发 | **unknown** | none | ❌ 无 role 候选 |
+| B · S2 detection_rule | **unknown** | low | ❌ 无 role 候选 |
+| C · E5 documentation | **unknown** | low | ❌ 无 role 候选 |
+| D · 反例 | active_operation | **low** | ❌ confidence 不足 |
+
+## 为什么全灭 —— 一个必须承认的连锁
+
+**那 5/5 的 PASS，本来就不是靠"精确使用点"实现的。**
+
+回看当时的输出，A 例是：
+```
+容器=Array  变量=None  消费者=['filter', 'membership']
+依据: 集合 + 成员判断（分支在调用方）+ 函数名 'looksLikeSecretPath'
+```
+
+**`变量=None`** —— 说明它**没有绑定变量**，走的是：
+
+```
+token 位置 ±220 字符窗口内，找 membership / filter / 函数名信号
+```
+
+**而这正是我后来判定"不可靠"并删除的路径**（因为大文件里窗口内什么 API 都有，
+`aes-256-gcm` 就是这样被判成 `detection_rule` 的）。
+
+**删掉窗口之后，A / B / C 同时失效。**
+
+## 结论修正（比 14% 更准确）
+
+```
+之前报的：
+    全量观察覆盖率 13.9%，最高观测 precision 7/11
+
+封存验证后：
+    **严格准入下 coverage ≈ 0**
+    那 13.9% 里的"有依据"，绝大部分是"窗口侥幸"
+```
+
+> **use-site analysis 在严格准入下，产不出可准入的 role evidence。**
+>
+> **这不是"实现没写好"，而是说明**：
+> 在没有「精确使用点」的前提下，本地 consumer 分析**没有可靠基础**。
+
+## 一个可能被误伤的路径（需单独说明）
+
+**`looksLikeSecretPath` 函数名信号，其实可能是精确的** ——
+它来自 `a(_ct, "name")` 这种**明确的语法结构**，不是"窗口里恰好有个名字"。
+
+**但我的实现用"半径 3000 的窗口"去找它**，所以它也被归入"窗口路径"一起否掉了。
+
+**若要精确化**，需要：
+```
+函数名信号所在的函数，必须**就是**消费这个集合的那个函数
+→ 需要识别函数边界（轻量解析）
+```
+
+**这就回到老大说的刹车点**：
+> 要拿到精确使用点，需要 `symbol identity + syntactic containment + consumer relation`。
+> 而实现这三件事，**就是在写一个半吊子的 AST parser。**
+
+## 封存状态
+
+```
+use-site analysis
+    ├── 状态：封存为 optional evidence enrichment
+    ├── 严格准入下 coverage：≈ 0（本实现）
+    ├── 唯一有希望精确化的路径：函数名信号 + 函数边界识别
+    │      └─ 但需要轻量解析 → 触到刹车点，暂不做
+    └── 对 Phase 2 的意义：
+            semantic_role 大部分时候将是 unknown
+            → 因此 §一「unknown ≠ negative」是必守规则
+            → 因此 Assessment 不能依赖 semantic_role
+```
+
+**已实测可靠的四类 role 与正式接受 unknown 的清单，
+见 `PHASE-2-EVIDENCE-MODEL-DESIGN.md` §四。**
+
+
