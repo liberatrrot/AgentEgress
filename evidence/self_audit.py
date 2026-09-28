@@ -22,8 +22,10 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 
 MODULES = ["schema.py", "state_algebra.py", "adapter.py", "assess.py",
            "relation.py", "chain.py", "chain_eval.py",
-           "consistency_gate.py", "replay_gate.py", "replay_real_world.py"]
-TESTS = ["test_invariants.py", "test_relation.py", "test_chain.py"]
+           "consistency_gate_v2.py", "replay_gate.py", "replay_real_world.py",
+           "locator.py"]
+TESTS = ["test_invariants.py", "test_relation.py", "test_chain.py",
+         "test_locator.py"]
 
 
 def read(f):
@@ -181,17 +183,22 @@ def main():
     print("=" * 100)
     n_issue = len(r1) + len(r2) + len(r3) + len(r4) + len(weak) + len(r6)
     print("  发现待处理项：%d" % n_issue)
-    print("""
-【最重要的自检结论 —— 关于 S5】
-  consistency_gate.py 里大量使用 "字符串 in 源码" 形式的断言。
+
+    if weak:
+        print("""
+【S5 待处理】仍有 %d 条弱断言是"字面量 in 源码"形式。
   这类断言**只能证明字面量存在，不能证明逻辑正确** ——
   它们恰好是"看起来通过但可能是假绿"的高发区。
 
-  这与 P0.5 学到的「PASS 的理由必须正确」是同一件事：
-  **Gate 自己也要被 Gate。**
+  要求：把它们降为 A 级辅助（不计入通过），并补对应的 B/C 级运行时断言。
+  Gate 自己也要被 Gate。""" % len(weak))
+    else:
+        print("""
+【S5】无弱断言 —— 所有断言都是运行时行为或跨层不变量。
 
-  处理方式：把最关键的几条（I1/I2/I5/I6）补上**运行时行为断言**，
-  而不是只查源码里有没有某个字符串。""")
+  ⚠ 但不要因此认为验证层已经无懈可击：
+     断言的有效性最终靠"失败路径自证"（故意违反 → 断言必须触发），
+     而不是靠"没有弱断言"这一个指标。""")
 
 
 if __name__ == "__main__":
