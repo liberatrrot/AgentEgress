@@ -25,10 +25,70 @@ import re
 
 # ================================================================ 基础：区域与括号
 
+def _regex_allowed(text, i):
+    """判断位置 i 处的 '/' 能否开始一个正则字面量。
+
+    JS 里 `/` 有歧义：除号 vs 正则起始。经典判据是看**前一个非空白字符**：
+      `( , = : [ ! & | ? { } ; + - * % ~ ^ < >` 之后  → 可以是正则
+      标识符 / 数字 / `)` / `]` 之后                    → 是除号
+
+    【实测发现的第二个严重 bug】
+    原实现完全不处理正则字面量 → 正则内部的 `//`（如 `/https?:\\/\\//i` 的结尾）
+    被当成**行注释起点** → 而 minified 代码"一行"有几十万字符
+    → **整行沦陷为注释**。
+
+    实测后果（S1 ZCode out/host/index.js）：最长的 line_comment 段达 54314 字符，
+    起点正是 `//i.test(t))` —— 即正则 `/^.../i` 的尾部。
+    """
+    j = i - 1
+    while j >= 0 and text[j] in " \t\r\n":
+        j -= 1
+    if j < 0:
+        return True
+    return text[j] in "(,=:[!&|?{};+-*%~^<>"
+
+
+def _scan_regex(text, i):
+    """从 '/' 开始扫正则字面量，返回结束位置（含 flags）或 -1（不是正则）。"""
+    j = i + 1
+    n = len(text)
+    in_class = False
+    while j < n:
+        c = text[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == "\n":
+            return -1                 # 正则不能跨行
+        if c == "[":
+            in_class = True
+        elif c == "]":
+            in_class = False
+        elif c == "/" and not in_class:
+            j += 1
+            # 吃掉 flags
+            while j < n and text[j].isalpha():
+                j += 1
+            return j
+        j += 1
+    return -1
+
+
 def lex_regions(text):
     """返回 [(start, end, kind)]，kind ∈ code / string / line_comment / block_comment。
 
-    独立实现，不复用被测工具的代码。
+    【实测发现的两个严重 bug，均已修】
+    ① 未闭合引号会一路吞到下一个同种引号 ——
+       JS 的 `'`/`"` 不能跨行，原实现没检查换行。
+    ② **完全不处理正则字面量** —— 正则里的 `//` 被当成行注释起点，
+       在 minified 代码（一行几十万字符）上会让**整行沦陷**。
+
+    修复前（S1 ZCode out/host/index.js）：code 12.6% / string 78.2%
+    修复后需重新实测。
+
+    ⚠ **注意**：`agentegress.py` 里有另一个 `lex_regions` 实现，
+    经检查存在同类问题（code 27.1% / string 65.7%）。
+    但那是 P0 层，改动会影响 Phase 1 的全部结论，**不在本层修**。
     """
     segs = []
     i, n = 0, len(text)
@@ -51,20 +111,38 @@ def lex_regions(text):
             segs.append((i, j, "block_comment"))
             i, plain_start = j, j
             continue
+        # ★ 正则字面量（必须在 `//` 判断之后、字符串之前处理）
+        if c == "/" and _regex_allowed(text, i):
+            end = _scan_regex(text, i)
+            if end > 0:
+                if plain_start < i:
+                    segs.append((plain_start, i, "code"))
+                segs.append((i, end, "regex"))
+                i, plain_start = end, end
+                continue
         if c in "\"'`":
-            if plain_start < i:
-                segs.append((plain_start, i, "code"))
-            q, j = c, i + 1
+            q = c
+            j = i + 1
+            closed = False
             while j < n:
-                if text[j] == "\\":
+                ch = text[j]
+                if ch == "\\":
                     j += 2
                     continue
-                if text[j] == q:
+                if ch == "\n" and q != "`":
+                    break
+                if ch == q:
                     j += 1
+                    closed = True
                     break
                 j += 1
-            segs.append((i, j, "string"))
-            i, plain_start = j, j
+            if closed:
+                if plain_start < i:
+                    segs.append((plain_start, i, "code"))
+                segs.append((i, j, "string"))
+                i, plain_start = j, j
+            else:
+                i += 1
             continue
         i += 1
     if plain_start < n:
