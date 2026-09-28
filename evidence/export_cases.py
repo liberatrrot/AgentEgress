@@ -32,6 +32,8 @@ DOGFOOD = os.path.join(_ROOT, "tests", "dogfood")
 
 MAX_FILE_MB = float(os.environ.get("EX_MAX_FILE_MB", "5"))
 WINDOW = int(os.environ.get("EX_WINDOW", "4000"))
+ONLY = os.environ.get("EX_ONLY", "")      # 只跑文件名含该串的文件（分批用）
+TRUNC_MB = float(os.environ.get("EX_TRUNC_MB", "0"))
 
 FILES = [
     ("S1 ZCode",     "s1-zcode/out/host/index.js"),
@@ -60,12 +62,16 @@ def snippet(text, pos, back=160, fwd=160):
 def main():
     cases = []
     for tag, rel in FILES:
+        if ONLY and ONLY not in rel:
+            continue
         p = os.path.join(DOGFOOD, *rel.split("/"))
         if not os.path.exists(p):
             continue
         if os.path.getsize(p) / 1048576.0 > MAX_FILE_MB:
             continue
         text = open(p, encoding="utf-8", errors="ignore").read()
+        if TRUNC_MB and len(text) > TRUNC_MB * 1048576:
+            text = text[:int(TRUNC_MB * 1048576)]
         _obs, by_cap = build(text, os.path.basename(p))
 
         # 展开全部 citation
