@@ -18,6 +18,8 @@ __pycache__/
 tests/_*
 tests/*/_*
 tests/*/_*.json
+evidence/_*
+evidence/*/_*
 
 # dogfooding：解包出来的第三方客户端代码（体积大 + 版权属于对方）
 # 只提交「观察结论」（DOGFOODING-RESULTS.md），不提交样本本体。
