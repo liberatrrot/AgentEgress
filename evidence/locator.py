@@ -50,7 +50,6 @@ from relation import relate, region_at, same_object, argument_flow   # noqa: E40
 SEARCH_STATES = ("no_candidate", "candidate_found_but_unverified",
                  "relation_verified", "search_blocked")
 
-
 class RelationSearch:
     """一次 relation 搜索的完整记录（可回放）。"""
 
@@ -109,16 +108,111 @@ def expand_citations(text, ev, pattern_re=None, max_hits=40):
 # 理由：33MB 全配对已实测超时（Python lexer + 56 regex）
 DEFAULT_WINDOW = 4000
 MAX_CANDIDATE_PAIRS = 200
+# 结构坐标的采集半径（围绕一个 pattern 命中位置）
+ANCHOR_RADIUS = 220
+# ★ 每侧最多取多少个结构锚点
+#
+# 【实测调优】不限数量时，端点会从 1 个膨胀到 13 个，
+# 两侧配对后候选对从 13 暴增到 1683（**129×**）—— 噪声完全失控。
+# 只取**距离命中位置最近的** N 个锚点，把增长控制在常数倍。
+MAX_ANCHORS_PER_SIDE = 3
 
 
-def candidate_pairs(text, evs_a, evs_b, window=DEFAULT_WINDOW):
+# ================================================================ ★ micro-fix：结构坐标
+
+# 【实测发现的真问题】candidate_pairs 用 **pattern 命中位置** 当关系端点。
+# 但 relation 的端点是**结构坐标**：
+#     argument_flow 的两端 = 「变量绑定位置」+「实参引用位置」
+#     same_object   的两端 = 「对象属性值位置」
+# 这**不是同一套坐标系统**。
+#
+# 实测证据（E3 构造样本）：
+#     pattern 命中：createCipheriv @265 · fetch @734
+#     结构坐标：    const artifact = makeArtifact @830 · uploadPutObject(artifact,…) @877
+#     relate(@265, @734) = False   ← 用命中位置必然失败
+#     argument_flow(@830, @877) = True   ← 用结构坐标就成立
+#
+# 所以即使能力配对正确，**用错坐标就永远建不出关系**。
+# 这不是"窗口太小"，是**坐标系统错配**。
+#
+# micro-fix 范围严格限定：**只扩展候选端点集合**。
+#   ❌ 不改 relation 类型定义
+#   ❌ 不改权重 / 阈值 / verdict / 打分
+#   ❌ 不引入 semantic-role enrichment
+
+_RE_BIND = re.compile(r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=")
+_RE_CALL = re.compile(r"([A-Za-z_$][\w$.]*)\s*\(")
+
+
+def _all_anchors(text, pos, radius=ANCHOR_RADIUS):
+    """列出半径内**全部**结构坐标（不截断），供按距离排序用。"""
+    out = set()
+    lo = max(0, pos - radius)
+    hi = min(len(text), pos + radius)
+    seg = text[lo:hi]
+    for m in _RE_BIND.finditer(seg):
+        out.add(lo + m.start())
+    for m in _RE_CALL.finditer(seg):
+        out.add(lo + m.start())
+    out.add(pos)
+    return out
+
+
+def structural_anchors(text, pos, radius=ANCHOR_RADIUS,
+                       max_anchors=MAX_ANCHORS_PER_SIDE):
+    """给定一个 pattern 命中位置，返回附近**最近的**若干结构性坐标。
+
+    `pos` 本身始终保留 —— 保证新集合是旧集合的**超集**，
+    这样 micro-fix 不会丢失任何原有能力（只会增加候选）。
+
+    ★ 按**离命中位置的距离**排序取最近的 N 个。
+      【实测踩坑】第一版按坐标大小排序（sorted），
+      结果截断时把远处但结构上更相关的锚点排掉了 → U12 回归反而失败。
+    """
+    cands = _all_anchors(text, pos, radius)
+    ordered = sorted(cands, key=lambda p: (abs(p - pos), p))
+    out = [pos] + [p for p in ordered if p != pos][:max(0, max_anchors - 1)]
+    return sorted(set(out))
+
+
+def expand_anchors(text, positions, radius=ANCHOR_RADIUS,
+                   max_anchors=MAX_ANCHORS_PER_SIDE, max_total=8):
+    """对一组命中位置做结构坐标展开（总量有上限，且**按距离优先**）。
+
+    ★ 同样按"离原始命中位置的距离"排序后截断，
+      否则结构上最相关的锚点可能被位置靠前的噪声挤掉。
+    """
+    scored = []
+    for p in positions:
+        for a in _all_anchors(text, p, radius):
+            scored.append((abs(a - p), a))
+    scored.sort()
+    out = set(positions)
+    for _d, a in scored:
+        if len(out) >= max_total:
+            break
+        out.add(a)
+    return sorted(out)
+
+
+def expand_anchors(text, positions, radius=ANCHOR_RADIUS):
+    """对一组命中位置做结构坐标展开。"""
+    out = set()
+    for p in positions:
+        out.update(structural_anchors(text, p, radius))
+    return sorted(out)
+
+
+def candidate_pairs(text, evs_a, evs_b, window=DEFAULT_WINDOW,
+                    expand=False, radius=ANCHOR_RADIUS):
     """★ R-L3：只生成"合理邻域"内的候选对，复杂度有界。
 
-    便宜条件（先筛）：
-        same file（本实现天然满足 —— 单文件内）
-        distance <= local_window
-    然后才调用 same_object / argument_flow verifier。
+    `expand=True` 时启用 micro-fix：先把两侧端点展开为结构坐标，
+    再做距离筛选。**默认 False 保持历史行为**（便于对照）。
     """
+    if expand:
+        evs_a = expand_anchors(text, evs_a, radius)
+        evs_b = expand_anchors(text, evs_b, radius)
     pairs = []
     n = 0
     for pa in evs_a:
@@ -137,35 +231,54 @@ def candidate_pairs(text, evs_a, evs_b, window=DEFAULT_WINDOW):
 # ================================================================ 主搜索
 
 def search_relation(text, from_cap, to_cap, evs_a, evs_b,
-                    window=DEFAULT_WINDOW, blocked_reason=None):
+                    window=DEFAULT_WINDOW, blocked_reason=None,
+                    lazy_expand=True):
     """对一对能力做一次 relation 搜索，返回四态结果。
 
     ★ R-L2：**不使用 primary_citation 作为唯一输入** ——
              用 evs_a / evs_b 的完整 citation 集合。
+
+    ★ micro-fix（坐标系统修正）采用**懒扩展**：
+        第一轮用 pattern 命中位置（保持历史行为）
+        只有第一轮**一个都没建出**时，才把端点展开为结构坐标重试
+      理由：实测"全量展开"会让候选对从 13 暴增到 1683（129×），
+            引入大量噪声；懒扩展只在"原本找不到"时付出这个代价。
     """
     if blocked_reason:
         return RelationSearch(from_cap, to_cap, "search_blocked",
                               blockers=[blocked_reason])
 
-    pairs, truncated = candidate_pairs(text, evs_a, evs_b, window)
-    if not pairs:
-        return RelationSearch(from_cap, to_cap, "no_candidate",
-                              blockers=["outside_local_window"]
-                              if (evs_a and evs_b) else ["missing_evidence"])
-
+    # ---- 第一轮：pattern 命中位置（历史行为）----
+    pairs, truncated = candidate_pairs(text, evs_a, evs_b, window, expand=False)
     verified = []
     candidates = []
     for (pa, pb) in pairs:
-        # 先做便宜的存在性检查 —— 是否在同一个对象字面量 /
-        # 是否有绑定关系（这两个 verifier 内部自带严格依据，不做窗口猜测）
         r = relate(text, pa, pb, from_cap, to_cap)
         if r:
             verified.append(r)
             if len(verified) >= 3:
                 break
         else:
-            # 记录"邻域内确实存在成对证据但 verifier 未通过"
             candidates.append((pa, pb))
+
+    used_expand = False
+    total_checked = len(pairs)
+
+    # ---- 第二轮（懒扩展）：仅当第一轮完全失败 ----
+    if not verified and lazy_expand and evs_a and evs_b:
+        pairs2, tr2 = candidate_pairs(text, evs_a, evs_b, window, expand=True)
+        if len(pairs2) > len(pairs):
+            used_expand = True
+            truncated = truncated or tr2
+            total_checked = len(pairs2)
+            for (pa, pb) in pairs2:
+                r = relate(text, pa, pb, from_cap, to_cap)
+                if r:
+                    verified.append(r)
+                    if len(verified) >= 3:
+                        break
+                else:
+                    candidates.append((pa, pb))
 
     if verified:
         st = "relation_verified"
@@ -177,8 +290,9 @@ def search_relation(text, from_cap, to_cap, evs_a, evs_b,
     return RelationSearch(
         from_cap, to_cap, st,
         verified=verified, candidates=candidates,
-        blockers=(["complexity_cap_reached"] if truncated else []),
-        checked_pairs=len(pairs))
+        blockers=(["complexity_cap_reached"] if truncated else [])
+                 + (["expanded_anchors"] if used_expand else []),
+        checked_pairs=total_checked)
 
 
 def summarize_searches(searches):
