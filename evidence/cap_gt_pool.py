@@ -33,20 +33,28 @@ POOL = {
         "desc": "明确 capability-positive（access + handling + egress + 可达链）",
         "cases": [
             ("b1-real-user-data", "p0-boundary/b1-real-user-data/src/index.js"),
-            ("s1-host-snapshotUpload", "s1-zcode/out/host/index.js"),   # 截取片段
+            # 【替换】原 s1-host-snapshotUpload 用的是 2.5MB 文件的 4000 字符截断片段，
+            # 内容全是 minified 的 chunk import + 一点类定义，**没有任何实际逻辑**
+            # → 四维事实无法成立，不可盲标。
+            ("v1-wrapper", "p0-boundary/v1-wrapper/src/index.js"),
             ("e0-baseline", "s5-orthogonal/e0-baseline/src/index.js"),
             ("v0-direct", "p0-boundary/v0-direct/src/index.js"),
+            # 【移入】盲标 S2 时发现 d0-standard 的注释是「标准 API：全部直调」，
+            # 代码为 treescan → createCipheriv → Buffer.concat → fetch（四维全 1），
+            # **它是正对照，不是 negative** —— 原归类错误，移入 S1。
+            ("d0-standard", "p0-boundary/d0-standard/src/index.js"),
         ],
     },
     "S2": {
         "desc": "明确 capability-negative（无 access 或无 egress）",
         "cases": [
             ("b2-test-only", "p0-boundary/b2-test-only/src/index.js"),
-            ("d0-standard", "p0-boundary/d0-standard/src/index.js"),
-            # 【替换】原 s3-main 4419 行、s4-main 1.2MB minified —— 无法人工盲标。
-            # 换成同一样本包里**小到可读**的文件（保持"真实项目"属性）。
             ("s3-preload", "s3-opencode/out/preload/index.js"),
             ("s4-urlDetect", "s4-quark/dist/workers/urlDetect.js"),
+            # ⚠ S2 只有 3 个样本。
+            #   原因：盲标暴露出原归入 S2 的两个样本（d0-standard / e1-discovery）
+            #   实际上都是 **positive** —— 说明**"明确 negative"的样本池本身就稀缺**。
+            #   **不凑数**：宁可 S2 少一个，也不把归类错误的样本留在里面。
         ],
     },
     "S3": {
@@ -84,6 +92,9 @@ POOL = {
             ("v3-helper-split", "p0-boundary/v3-helper-split/src/index.js"),
             ("v6-alias", "p0-boundary/v6-alias/src/index.js"),
             ("e3-structural", "s5-orthogonal/e3-structural/src/index.js"),
+            # 【移入】e1-discovery：能力真实存在（四维全 1）但**不用任何标准关键词**，
+            # 属于"需跨层/跨命名约定才能确认"的复杂样本。
+            ("e1-discovery", "s5-orthogonal/e1-discovery/src/index.js"),
         ],
     },
 }
