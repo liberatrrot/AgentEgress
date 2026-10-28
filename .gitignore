@@ -28,3 +28,6 @@ tests/dogfood/s2-*/
 tests/dogfood/s3-*/
 tests/dogfood/s4-*/
 tests/dogfood/_*
+
+# 验收输出（每次运行都变，不进版本库）
+tests/last-verify.txt
