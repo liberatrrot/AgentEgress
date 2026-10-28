@@ -122,8 +122,9 @@ DEFAULT_FINGERPRINTS = {
             "note": "2026-09 被曝静默上传工作区全量快照（含 .git 历史）；v3.14.0 已移除链路；2026-09-21 开源",
             "paths": ["~/.zcode", "%APPDATA%/ZCode", "%LOCALAPPDATA%/@zcodedesktop-updater"],
             "snapshot_hints": ["v2/checkpoints", "v2/repo-wiki"],
-            "audit_paths": ["refs/ZCode/resources/app.asar",
-                            "%LOCALAPPDATA%/Programs/ZCode/resources/app.asar"],
+            # 只列标准安装位置。装在其它盘/自定义目录时，用 --static-path 手动指定 app.asar，
+            # 不要在这里硬编码某台机器的盘符——指纹库是给所有人用的，不是给某一台机器用的。
+            "audit_paths": ["%LOCALAPPDATA%/Programs/ZCode/resources/app.asar"],
             "endpoints": ["zcode.z.ai", "*.aliyuncs.com (OSS)"],
             "switches": [
                 {"key": "optimizeAgentExperienceEnabled", "claimed": "数据采集 / 遥测上传",
@@ -148,10 +149,9 @@ DEFAULT_FINGERPRINTS = {
             "vendor": "腾讯 Tencent",
             "baseline": "medium",
             "note": "IDE 级 Agent，配置 / 会话 / 二进制运行环境均在数据目录内",
-            "paths": ["~/.workbuddy", "%APPDATA%/WorkBuddy", "%LOCALAPPDATA%/WorkBuddy", "<WORKBUDDY_HOME>"],
+            "paths": ["~/.workbuddy", "%APPDATA%/WorkBuddy", "%LOCALAPPDATA%/WorkBuddy"],
             "snapshot_hints": ["projects", "memory", "session", "history", "log"],
-            "audit_paths": ["<WORKBUDDY_HOME>/resources/app.asar",
-                            "%LOCALAPPDATA%/Programs/WorkBuddy/resources/app.asar"],
+            "audit_paths": ["%LOCALAPPDATA%/Programs/WorkBuddy/resources/app.asar"],
             "endpoints": ["*.tencent.com", "*.qq.com"],
         },
         {
@@ -161,10 +161,10 @@ DEFAULT_FINGERPRINTS = {
             "baseline": "medium",
             "note": "桌面端 + 工作区数据分离存放",
             "paths": ["~/.kimi-work", "~/.kimi-webbridge", "%APPDATA%/kimi-desktop",
-                      "%LOCALAPPDATA%/kimi-desktop-updater", "<KIMI_WORK_HOME>", "<KIMI_DATA_HOME>"],
+                      "%LOCALAPPDATA%/kimi-desktop-updater"],
             "snapshot_hints": ["cache", "session", "history", "upload", "temp"],
-            "audit_paths": ["<KIMI_WORK_HOME>/resources/app.asar",
-                            "<KIMI_WORK_HOME>/resources/resources/gateway.asar"],
+            # 桌面端安装位置随版本变化，不在此硬编码；需要静态审计时用 --static-path 指定
+            "audit_paths": [],
             "endpoints": ["*.moonshot.cn", "*.kimi.com"],
         },
         {
