@@ -253,7 +253,12 @@ python agentegress.py --static-path tests/review/samples/q1_baseline
 | 测试 | 当前状态 | 如何运行 | 说明 |
 |---|---|---|---|
 | `tests/verify.py` | 全部通过 | `python tests/verify.py --quick` | 主验收。其中的**合成回归**用 `tests/cases-synthetic.json`（样本随仓库分发，克隆即可跑）；**真实样本回归**用 `tests/cases.json`，依赖 `refs/` 下的外部克隆，缺样本时跳过并显式计数 |
-| `tests/p05/test_p05.py` | **2 / 5 PASS —— 未修完** | `python tests/p05/test_p05.py` | Role Evidence Probe 验收。三个用例仍是 FAIL（角色判定偏保守，大量落入 `unknown`）。这是真实状态，**不要因为 verify 全绿就认为这里通过了** |
+| `tests/p05/test_p05.py` | **2 / 5 PASS —— 3 项未通过** | `python tests/p05/test_p05.py` | Role Evidence Probe 验收。三个用例仍是 FAIL（角色判定偏保守，大量落入 `unknown`）。这是真实状态，**不要因为 verify 全绿就认为这里通过了** |
+
+**p05 的分数不能跨版本比较**：该测试的输入原本是从某客户端打包产物里取出的真实片段，
+因来源与再分发授权无法确认，已全部替换为本项目独立编写的**合成样本**。
+`tests/p05/P05-REPORT.md` 记录的是旧样本下的结果（1/5），当前是合成样本下的 2/5——
+两次得分依据的输入不同，**不可直接比较，也不能据此说「通过率提高了」**。
 
 合成回归里带 `xfail` 标记的条目同样是**已知缺口**，不是被放水的断言：
 断言值按样本的设计意图写死，工具没达到就显示「已知缺口 N 项」；

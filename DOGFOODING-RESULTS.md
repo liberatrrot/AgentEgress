@@ -1,5 +1,13 @@
 # DOGFOODING RESULTS · Phase 1
 
+> **⚠ 历史实测记录，不可在干净克隆中复现**
+> 本文所有结论来自 2026-09 在本机上对**真实安装的客户端**（ZCode / WorkBuddy / Kimi Work /
+> Cursor / Tabnine 等）做的观察。这些客户端的数据目录与打包产物**不在版本库内，也不随仓库分发**
+> （见 `DOGFOODING-BASELINE.md` 与 `.gitignore` 的 `refs/`、`tests/dogfood/s*-*/`）。
+> 因此：**其他人克隆本仓库后无法复现文中的任何数字与判定**，要复现得先在本机装上同样的客户端，
+> 并用同一份冻结基线重跑。这是一份历史观察，不是当前可复现的测试结果。
+> 文中少量代码行是对被分析客户端的评论性引用，性质见 `THIRD-PARTY-NOTICES.md`。
+
 > 冻结基线：commit `f561272`，`agentegress.py` sha256 `48B914A0...F2EC7`  
 > 期间**未修改任何代码 / 规则 / 权重 / 阈值**（见 `DOGFOODING-BASELINE.md`）  
 > 方法：三遍观察法 —— ① 完全不看工具建立 Ground Truth ② 跑工具做差分 ③ 攻击"不一致"并归因

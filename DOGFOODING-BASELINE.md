@@ -81,6 +81,11 @@ Release-prep Gate：通过
 | S4 | Cursor | 真实客户端（未装 asar？需确认） | `%LOCALAPPDATA%\Programs\cursor\resources\app.asar` |
 | S5 | tmp_attack 构造样本 | 人工构造（红队留的） | `tests/review/samples/` |
 
+> **S1–S4 的文件不在版本库里。** 它们是被测客户端在本机的安装产物，
+> `refs/` 与 `tests/dogfood/s*-*/` 都写在 `.gitignore` 中，不随仓库分发。
+> 表中路径只是当时的定位方式，不代表克隆后能在这里找到文件；`<..._HOME>` 是脱敏占位符。
+> 只有 S5 的构造样本随仓库分发。
+
 ---
 
 ## 三遍观察法（老大定的）
