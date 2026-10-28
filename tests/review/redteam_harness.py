@@ -3,7 +3,7 @@
 
 用法：
     import redteam_harness as H
-    r = H.scan_dir(r"E:\\apple\\AgentEgress\\tests\\review\\samples\\q1_baseline")
+    r = H.scan_dir("tests/review/samples/q1_baseline")   # 相对仓库根
     H.dump(r)
 """
 import os
