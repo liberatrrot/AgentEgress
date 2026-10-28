@@ -8,7 +8,8 @@
 re.search 实跑一遍；若「能匹配」且「候选串里不含任何关键词」→ 找到反例。
 """
 import sys, re, itertools
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2]))
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import agentegress as A
 from re import _parser as sre_parse
 

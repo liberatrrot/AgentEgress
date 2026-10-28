@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """A1 严格版 v3：展开有限歧义 -> 逐变体求必现字面量 -> 要求全部变体被 kw 覆盖。"""
 import sys, re, itertools
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2]))
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import agentegress as A
 from re import _parser as sre_parse
 

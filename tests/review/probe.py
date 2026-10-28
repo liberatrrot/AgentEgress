@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """针对具体疑点的构造性实验。"""
 import os, sys, struct, json, shutil, tempfile
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2]))
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import agentegress as A
 
 TMP = os.path.join(tempfile.gettempdir(), "ae_probe")

@@ -19,7 +19,7 @@
   "results": [
     {
       "id": "T1-feedback",
-      "path": "<REPO>/refs/ZCode/packages/services/src/feedback",
+      "path": "refs/ZCode/packages/services/src/feedback",
       "seconds": 0.096,
       "files_scanned": 6,
       "bytes_scanned": 63303,
@@ -83,7 +83,7 @@
     },
     {
       "id": "T2-provider-node",
-      "path": "<REPO>/refs/ZCode/packages/provider-node/src",
+      "path": "refs/ZCode/packages/provider-node/src",
       "seconds": 0.128,
       "files_scanned": 17,
       "bytes_scanned": 70012,
@@ -128,7 +128,7 @@
     },
     {
       "id": "T3-zwork-free",
-      "path": "<REPO>/refs/ZCode/packages/model-option-map/src",
+      "path": "refs/ZCode/packages/model-option-map/src",
       "seconds": 0.046,
       "files_scanned": 8,
       "bytes_scanned": 28955,

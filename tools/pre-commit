@@ -16,7 +16,9 @@
 # 这些命令不一定在 PATH 上。第一版用了 grep，结果静默跳过验收、提交照过——
 # 正是这个项目一直在批评的「静默失效」。现在只用 shell 内置的 case 匹配。
 
-PY="python3"
+# 解释器：优先环境变量 PYTHON，否则依次探测 python3 / python。
+# 这里不硬编码任何本机路径——克隆到别的机器上必须照样能跑。
+PY="${PYTHON:-python3}"
 [ -f "$PY" ] || PY="python3"
 command -v "$PY" >/dev/null 2>&1 || PY="python"
 command -v "$PY" >/dev/null 2>&1 || {

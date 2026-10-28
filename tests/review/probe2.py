@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os, sys, io
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2]))
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import agentegress as A
 
 print("=1= 负 offset 的异常类型（POSIX 会 ValueError，Windows 可能 OSError）")
@@ -33,9 +34,12 @@ for ext in [".env", ".html", ".htm", ".vue", ".svelte", ".txt", ".ini",
 
 print()
 print("=4= 预筛（_KW_FILTER）的真实选择性：在真实源码树上统计")
-root = str(__import__("pathlib").Path(__file__).resolve().parents[2] / "refs" / "ZCode" / "packages" / "services" / "src")
+root = str(Path(__file__).resolve().parents[2] / "refs" / "ZCode" / "packages" / "services" / "src")
+if not os.path.isdir(root):
+    print("   跳过：需要先 git clone ZCode 到 refs/ZCode（见 README「参考样本」）")
+    root = None
 tot = passed = useless = hits_files = 0
-for dp, dn, fn in os.walk(root):
+for dp, dn, fn in ([] if root is None else os.walk(root)):
     for f in fn:
         p = os.path.join(dp, f)
         if A.detect_lang(p) in ("other",):

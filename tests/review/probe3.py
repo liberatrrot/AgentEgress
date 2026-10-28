@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """对真实 app.asar 独立复算：扫描覆盖面的实际损失。"""
 import os, sys, re
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2]))
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import agentegress as A
 
 ASAR = r"refs/ZCode/resources/app.asar"

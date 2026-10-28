@@ -8,7 +8,8 @@
 任何 kw，则该分支可疑 —— 存在匹配不含任何 kw 的可能。
 """
 import sys, re
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2]))
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import agentegress as A
 from re import _parser as sre_parse
 from collections import Counter

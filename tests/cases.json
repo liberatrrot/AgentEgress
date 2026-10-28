@@ -7,7 +7,7 @@
   "cases": [
     {
       "id": "T1-feedback",
-      "path": "<REPO>/refs/ZCode/packages/services/src/feedback",
+      "path": "refs/ZCode/packages/services/src/feedback",
       "kind": "dir",
       "expect_present": ["upload_credential_api", "object_storage_upload"],
       "expect_absent": ["browser_state_access", "credential_access", "envelope_encryption"],
@@ -15,7 +15,7 @@
     },
     {
       "id": "T2-provider-node",
-      "path": "<REPO>/refs/ZCode/packages/provider-node/src",
+      "path": "refs/ZCode/packages/provider-node/src",
       "kind": "dir",
       "expect_present": ["retry_backoff"],
       "expect_absent": ["browser_state_access", "upload_credential_api"],
@@ -23,7 +23,7 @@
     },
     {
       "id": "T3-zwork-free",
-      "path": "<REPO>/refs/ZCode/packages/model-option-map/src",
+      "path": "refs/ZCode/packages/model-option-map/src",
       "kind": "dir",
       "expect_present": [],
       "expect_absent": ["workspace_snapshot", "upload_credential_api", "object_storage_upload", "envelope_encryption"],
