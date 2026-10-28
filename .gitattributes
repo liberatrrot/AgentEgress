@@ -1,0 +1,17 @@
+# 统一换行符：仓库以 LF 存储，避免 Windows 克隆后 shell 钩子被 CRLF 化导致 bad interpreter
+* text=auto eol=lf
+
+# 明确声明脚本类型，确保在 Windows 上克隆后仍可直接执行
+*.py            text eol=lf
+*.sh            text eol=lf
+tools/pre-commit text eol=lf
+*.ps1           text eol=crlf
+*.bat           text eol=crlf
+
+# 二进制，不做换行转换与文本 diff
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.pdf   binary
+*.asar  binary

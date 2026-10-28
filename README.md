@@ -81,6 +81,13 @@ python agentegress.py --static-path "refs/ZCode\resources\app.asar" -H reports/z
 
 ## 输出示例
 
+### HTML 报告（单文件，自包含，可离线打开）
+
+![AgentEgress HTML 报告总览](docs/img/report-overview.png)
+
+> 取自一次真实扫描（7 个已装客户端 / 7.15 GB 数据目录）。路径已脱敏为 `<HOME>`。
+> 风险等级是**静态度量**，不是对该产品的安全结论——理由见本文开头的「根本局限」。
+
 **M1 + M2**（数据痕迹）：
 
 ```
