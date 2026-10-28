@@ -107,7 +107,7 @@ async function push(url) {
 '''
 
 CASES = [
-    ("A · S1 denylist（真实：bct.has + looksLikeSecretPath）",
+    ("A · S1 denylist（合成：排除名单 + 敏感名判定）",
      S1, "id_ed25519", 0,
      "denylist", "不该被判成 credential_access（读取）"),
     ("A' · S1 对照：真的读取密钥并外发",

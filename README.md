@@ -62,7 +62,7 @@ python agentegress.py -m reports/scan.md -j reports/scan.json -H reports/scan.ht
 python agentegress.py --static -H reports/scan.html
 
 # 指定审计目标（目录或 app.asar）
-python agentegress.py --static-path "%LOCALAPPDATA%\Programs\ZCode\resources\app.asar" -H reports/zcode.html
+python agentegress.py --static-path "C:\Path\To\Your\Tool\resources\app.asar" -H reports/audit.html
 ```
 
 **默认扫描范围**：用户数据目录（`~/.<tool>`、`%APPDATA%`、`%LOCALAPPDATA%`）和标准安装目录（`%LOCALAPPDATA%\Programs\<Tool>`）。
@@ -253,7 +253,7 @@ python agentegress.py --static-path tests/review/samples/q1_baseline
 | 测试 | 当前状态 | 如何运行 | 说明 |
 |---|---|---|---|
 | `tests/verify.py` | 全部通过 | `python tests/verify.py --quick` | 主验收。其中的**合成回归**用 `tests/cases-synthetic.json`（样本随仓库分发，克隆即可跑）；**真实样本回归**用 `tests/cases.json`，依赖 `refs/` 下的外部克隆，缺样本时跳过并显式计数 |
-| `tests/p05/test_p05.py` | **1 / 5 PASS —— 未修** | `python tests/p05/test_p05.py` | Role Evidence Probe 验收。五个用例里有四个仍是 FAIL（角色判定偏保守，大量落入 `unknown`）。这是真实状态，**不要因为 verify 全绿就认为这里通过了** |
+| `tests/p05/test_p05.py` | **2 / 5 PASS —— 未修完** | `python tests/p05/test_p05.py` | Role Evidence Probe 验收。三个用例仍是 FAIL（角色判定偏保守，大量落入 `unknown`）。这是真实状态，**不要因为 verify 全绿就认为这里通过了** |
 
 合成回归里带 `xfail` 标记的条目同样是**已知缺口**，不是被放水的断言：
 断言值按样本的设计意图写死，工具没达到就显示「已知缺口 N 项」；
@@ -267,8 +267,7 @@ python agentegress.py --static-path tests/review/samples/q1_baseline
 agentegress.py                         主程序（单文件，零依赖）
 ARCHITECTURE.md                        架构、数据模型、评分设计、踩坑实录、迭代路线
 LICENSE                                MIT（仅覆盖本项目自有代码）
-THIRD-PARTY-NOTICES.md                 第三方代码归属（ZCode / Apache-2.0）
-licenses/Apache-2.0.txt                Apache-2.0 全文
+THIRD-PARTY-NOTICES.md                 第三方代码与引证说明
 tests/cases-synthetic.json             合成回归用例（随仓库分发）
 tests/cases.json                       真实样本回归用例（需 refs/）
 reports/                               扫描报告输出
