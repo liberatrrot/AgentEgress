@@ -68,6 +68,10 @@ python agentegress.py --static-path "%LOCALAPPDATA%\Programs\ZCode\resources\app
 **默认扫描范围**：用户数据目录（`~/.<tool>`、`%APPDATA%`、`%LOCALAPPDATA%`）和标准安装目录（`%LOCALAPPDATA%\Programs\<Tool>`）。
 装在其它盘、自定义目录的客户端扫不到——指纹库不硬编码任何一台机器的盘符，请用 `--static-path` 指过去。
 
+**注意 `--static` 的跳过行为**：标准位置找不到任何可审计目标时，M3 会**静默跳过**——
+不报错、不影响 M1/M2 的结果，也不在输出里单列「没找到」。
+想知道实际扫到了什么，看报告里的**覆盖台账**（候选 → 读到 → 真正跑正则），或直接用 `--static-path` 指名路径。
+
 **Windows 注意**：控制台读中文可能乱码，但报告文件编码是正确的。建议直接看 `-H` 产出的 HTML。
 
 ---
@@ -84,37 +88,61 @@ python agentegress.py --static-path "%LOCALAPPDATA%\Programs\ZCode\resources\app
 
 ## 输出示例
 
-**M1 + M2**（数据痕迹）：
+下面这段是**仓库自带样本**的真实输出。样本在 `tests/review/samples/q1_baseline`
+（本项目自建，MIT），克隆后照命令跑就能复现同样结果：
+
+```bash
+python agentegress.py --static-path tests/review/samples/q1_baseline
+```
 
 ```
--- ZCode (智谱 Zhipu) ----------------------------------------
-  风险等级: [HIGH]
-    - 上传链路被触发过：失败计数 = 2
-    - 存在打包清单：1 份 / 19 个文件 / 784.58 KB
-    - 采集范围超出单个工作区：额外纳入 2 个全局配置文件
-  已知开关语义:
-    optimizeAgentExperienceEnabled
-      声称: 数据采集 / 遥测上传
-      实际: 只决定是否用你的数据训练模型
-  [快照状态] ~\.zcode\v2\checkpoints\21779c30c7d2\state.json
-    工作区      : <WORKSPACE>
-    上传失败计数: 2
-    最近打包    : 784.58 KB  ->  加密后 2.47 KB
+-- 自定义审计目标 (--static-path 指定) ----------------------------------------
+  风险等级: [MEDIUM]
+    - 外传能力画像：存在外传能力，需结合触发条件判断
+    - 已确认能力 0 项 / 疑似 5 项 / 弱信号 3 项
+  数据目录:
+    tests\review\samples\q1_baseline   (1 文件 / 1.50 KB)
+  可疑文件: 无
+  [外传能力画像 · M3] 存在外传能力，需结合触发条件判断
+    扫描 1 个文件 / 1.50 KB  |  已确认 0 / 疑似 5 / 弱信号 3
+    覆盖台账: 候选 1 -> 读到 1 -> 真正跑正则 1
+      设计内跳过: 第三方依赖 0 / 压缩产物 0 / 未知扩展名 0
+    因技术原因未覆盖: 0 项
+    [组合证据] 构成某些故事所需的几类证据同时存在：
+      ※ 本项是「证据共现」检测，不是程序路径/数据流分析。
+        共现 ≠ 在同一条可达路径上，请结合「关联度」自行判断。
+      [阻断级] 工作区采集 + 加密 + 对象存储直传
+         关联度: 较强：至少两个环节的证据出现在同一文件，建议优先人工核对
+         共有文件: src\main.js
+         证据: 工作区全量快照(likely/4处) + 信封加密(likely/2处) + 对象存储直传(likely/5处)
+      [阻断级] 工作区采集 + 上传凭证申请
+         关联度: 较强：至少两个环节的证据出现在同一文件，建议优先人工核对
+         共有文件: src\main.js
+         证据: 工作区全量快照(likely/4处) + 上传凭证接口(likely/3处)
+    [LIKELY]    工作区全量快照                    模式4  文件1   命中4    触发:未判定
+    [LIKELY]    上传凭证接口                     模式2  文件1   命中3    触发:未判定
+    [LIKELY]    信封加密                       模式2  文件1   命中2    触发:未判定
+    [LIKELY]    对象存储直传                     模式2  文件1   命中5    触发:未判定
+    [LIKELY]    失败自动重试                     模式2  文件1   命中5    触发:未判定
+    [POSSIBLE]  Git 历史访问                   模式1  文件1   命中1    触发:未判定
+    [POSSIBLE]  凭据文件访问                     模式1  文件1   命中2    触发:未判定
+    [POSSIBLE]  批量打包                       模式1  文件1   命中1    触发:未判定
+    未检出: 跨工作区配置采集
 ```
 
-**M3**（能力画像）：
+这个样本是一个「教科书式」的恶意客户端：读工作区 → 加密 → 申请上传凭证 → 直传对象存储。
+输出刻意把三件事分开：
 
-```
-  [外传能力画像 · M3] 存在多项已确认的外传能力
-    扫描 298 个文件 / 3.15 MB  |  已确认 2 / 疑似 4 / 弱信号 4
-    [CONFIRMED] 失败自动重试        模式3  文件15  命中55   触发:自动
-    [CONFIRMED] 遥测上报            模式4  文件21  命中88   触发:未判定
-    [LIKELY]    工作区全量快照       模式2  文件8   命中24   触发:自动
-    [LIKELY]    信封加密            模式2  文件1   命中5    触发:未判定
-    [LIKELY]    对象存储直传        模式2  文件1   命中5    触发:未判定
-    [LIKELY]    上传凭证接口        模式1  文件1   命中6    触发:未判定
-    [POSSIBLE]  命令执行            模式1  文件8   命中22   触发:未判定
-```
+- **单点能力**（`[LIKELY]` / `[POSSIBLE]`）：命中了几处模式，但不知道它们是不是同一条路径
+- **能力共现**（`[阻断级]`）：多个环节的证据出现在**同一个文件**里，构成一个"故事"
+- **覆盖台账**：跑了多少文件、跳过了多少、为什么跳过
+
+**M1 + M2 的输出**针对真实客户端的数据目录，形态是「目录 + 体积 + 快照状态 + 打包清单」。
+它必然带使用者本机路径，因此不在此展示——`python agentegress.py` 一条命令就能看到你自己机器上的结果。
+
+> 真实客户端上的实测结论见 `DOGFOODING-RESULTS.md`；
+> 其中用到的第三方样本（ZCode）的来源与许可见 `THIRD-PARTY-NOTICES.md`。
+
 
 ---
 
@@ -217,11 +245,33 @@ python agentegress.py --static-path "%LOCALAPPDATA%\Programs\ZCode\resources\app
 
 ---
 
+## 测试现状
+
+`tests/verify.py` 是主验收，上面「快速开始」跑的就是它，**它是绿的**。
+但它不是全部测试——下面这些是**独立**的，不包含在 verify 里，状态也不一样：
+
+| 测试 | 当前状态 | 如何运行 | 说明 |
+|---|---|---|---|
+| `tests/verify.py` | 全部通过 | `python tests/verify.py --quick` | 主验收。其中的**合成回归**用 `tests/cases-synthetic.json`（样本随仓库分发，克隆即可跑）；**真实样本回归**用 `tests/cases.json`，依赖 `refs/` 下的外部克隆，缺样本时跳过并显式计数 |
+| `tests/p05/test_p05.py` | **1 / 5 PASS —— 未修** | `python tests/p05/test_p05.py` | Role Evidence Probe 验收。五个用例里有四个仍是 FAIL（角色判定偏保守，大量落入 `unknown`）。这是真实状态，**不要因为 verify 全绿就认为这里通过了** |
+
+合成回归里带 `xfail` 标记的条目同样是**已知缺口**，不是被放水的断言：
+断言值按样本的设计意图写死，工具没达到就显示「已知缺口 N 项」；
+一旦某天达到了，会报 XPASS 并提示把该条从 xfail 移除。
+
+---
+
 ## 文件
 
 ```
 agentegress.py                         主程序（单文件，零依赖）
 ARCHITECTURE.md                        架构、数据模型、评分设计、踩坑实录、迭代路线
+LICENSE                                MIT（仅覆盖本项目自有代码）
+THIRD-PARTY-NOTICES.md                 第三方代码归属（ZCode / Apache-2.0）
+licenses/Apache-2.0.txt                Apache-2.0 全文
+tests/cases-synthetic.json             合成回归用例（随仓库分发）
+tests/cases.json                       真实样本回归用例（需 refs/）
 reports/                               扫描报告输出
-refs/                                  参考样本（外部克隆的源码，如 ZCode）
+refs/                                  参考样本（外部克隆的源码，如 ZCode），不入库
 ```
+

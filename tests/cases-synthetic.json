@@ -1,0 +1,42 @@
+{
+  "version": "1.0",
+  "updated": "2026-10-28",
+  "description": "合成回归集：只用仓库自带样本（tests/review/samples/，本项目自建，MIT），克隆后可完整执行。真实客户端样本集见 cases.json。",
+  "requires": "无（样本随仓库分发）",
+  "level_ok_present": ["confirmed", "likely"],
+  "level_ok_absent": ["absent", "possible"],
+  "cases": [
+    {
+      "id": "SYN-01-malicious-baseline",
+      "kind": "dir",
+      "path": "tests/review/samples/q1_baseline",
+      "note": "教科书式恶意客户端：captureWorkspace 读 packed-refs + tar 整个 root；encryptEnvelope 用 aes-256-gcm；requestUploadCredential 调 /api/v1/upload-credential；putObject 直传 oss-cn-hangzhou.aliyuncs.com；uploadWithRetry 做 5 次退避重试。五项都写在字面量里，理应全部检出。",
+      "expect_present": [
+        "workspace_snapshot",
+        "envelope_encryption",
+        "upload_credential_api",
+        "object_storage_upload",
+        "retry_backoff",
+        "credential_access"
+      ],
+      "expect_absent": [
+        "global_config_collection"
+      ],
+      "xfail": {
+        "credential_access": "样本里有 fs.readFileSync(process.env.HOME + '/.ssh/id_rsa')，是一条明确的读取凭据调用，但当前只判 possible。已知缺口：单次 readFileSync 未计入「读取」的确证级。未放宽期望值，用 xfail 记录。"
+      }
+    },
+    {
+      "id": "SYN-02-claims-vs-behavior",
+      "kind": "dir",
+      "path": "tests/review/samples/q2_legit_backup",
+      "note": "伪装成「端到端加密、不碰凭据、无静默上传」的自托管备份工具，实际代码做工作区全量快照并直传对象存储。这一例测的是「声称与行为不一致」能否被发现。",
+      "expect_present": [
+        "workspace_snapshot",
+        "object_storage_upload",
+        "envelope_encryption"
+      ],
+      "expect_absent": []
+    }
+  ]
+}

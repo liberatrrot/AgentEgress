@@ -8,7 +8,7 @@ AgentEgress 一键验收 —— 一条命令跑完所有检查，只看最后结
 把它固化成一条命令 + 一个固定的结果文件，改完只需两步：跑它、读结果。
 
 用法：
-  python tests/verify.py              # 标准验收（语法 + 自检 + 标注回归 + 鲁棒性，约 70 s）
+  python tests/verify.py              # 标准验收（语法 + 自检 + 合成回归 + 真实样本回归 + 鲁棒性，约 70 s）
   python tests/verify.py --quick      # 跳过 ZCode asar 大样本（约 25 s，pre-commit 用这个）
   python tests/verify.py --full       # 追加真实大样本抽查
   python tests/verify.py --json out.json
@@ -71,46 +71,62 @@ def check_selfcheck():
     return record("启动自检", True, detail, extra)
 
 
-# ---------------------------------------------------------------- 3. 标注回归
+# ---------------------------------------------------------------- 3. 回归（合成集 + 真实样本集）
 
-def check_regression(quick=False):
+def _load_case_file(name):
+    with open(os.path.join(HERE, name), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _run_case_set(spec_name, label, quick=False):
+    """跑一个用例集。
+
+    路径解析：相对路径按仓库根展开，绝对路径原样使用。
+    样本不存在 → 跳过并计数，**不计入 TP/FN**（样本没准备 ≠ 检测能力退化）。
+    xfail 字段里的能力 id：判为不 present 时记为已知缺口，不影响通过；
+    若意外判为 present，说明缺口已修复，按失败处理并提示更新用例——
+    这正是「不放宽期望」的执行方式。
+    """
     import agentegress as ae
-    with open(os.path.join(HERE, "cases.json"), encoding="utf-8") as f:
-        cases = json.load(f)["cases"]
+    spec = _load_case_file(spec_name)
+    cases = spec["cases"]
     if quick:
-        # 跳过最大的样本（ZCode asar，约 45 s），保留其余用例
-        cases = [c for c in cases if c["kind"] != "asar"] or cases
+        # 跳过最大的样本（asar，约 45 s），保留其余用例
+        cases = [c for c in cases if c.get("kind") != "asar"] or cases
 
-    ok_present = {"confirmed", "likely"}
-    ok_absent = {"absent", "possible"}
+    ok_present = set(spec.get("level_ok_present") or ["confirmed", "likely"])
+    ok_absent = set(spec.get("level_ok_absent") or ["absent", "possible"])
 
-    # 样本目录 refs/ 不在版本库内（体积大，且版权属于对方），需要自行 clone。
-    # 缺失时跳过对应用例，不能算成「漏检」——否则新克隆的仓库第一次跑验收就是红的，
-    # 而那会把「样本没准备」误报成「检测能力退化」。
     def _resolve(p):
         return p if os.path.isabs(p) else os.path.join(ROOT, p)
 
+    ready = [c for c in cases if os.path.exists(_resolve(c["path"]))]
     missing = [c["id"] for c in cases if not os.path.exists(_resolve(c["path"]))]
-    cases = [c for c in cases if os.path.exists(_resolve(c["path"]))]
-    if not cases:
-        return record("标注回归", True,
-                      "跳过 %d 例：样本目录 refs/ 未克隆（见 README 快速开始）" % len(missing))
+    if not ready:
+        return record(label, True,
+                      "跳过 %d 例：样本未就绪（%s）" % (
+                          len(missing), spec.get("requires") or "需自行准备样本"))
 
     tp = fp = fn = tn = 0
-    failures = []
+    failures, gaps, xpass = [], [], []
 
-    for case in cases:
+    for case in ready:
         acc = ae.CapabilityAccumulator()
         try:
-            _h, meta = ae.audit_path(_resolve(case["path"]), acc=acc)
+            _h, _meta = ae.audit_path(_resolve(case["path"]), acc=acc)
             lv = {c["id"]: c["level"] for c in ae.aggregate_from_buckets(acc)}
         except Exception as e:                  # noqa: BLE001
             failures.append("%s 异常：%s" % (case["id"], e))
             continue
+        xf = case.get("xfail") or {}
         for cid in case.get("expect_present", []):
             got = lv.get(cid, "absent")
             if got in ok_present:
                 tp += 1
+                if cid in xf:
+                    xpass.append("%s/%s 已转通过，请从 xfail 移除" % (case["id"], cid))
+            elif cid in xf:
+                gaps.append("%s/%s：%s" % (case["id"], cid, xf[cid]))
             else:
                 fn += 1
                 failures.append("%s 漏检 %s（得到 %s）" % (case["id"], cid, got))
@@ -127,12 +143,28 @@ def check_regression(quick=False):
     f1 = (2 * p * r / (p + r)) if (p and r) else None
 
     detail = "P=%s R=%s F1=%s（TP%d FP%d FN%d TN%d，%d 例）" % (
-        _fmt(p), _fmt(r), _fmt(f1), tp, fp, fn, tn, len(cases))
+        _fmt(p), _fmt(r), _fmt(f1), tp, fp, fn, tn, len(ready))
     if missing:
-        detail += "；跳过 %d 例（refs/ 样本未克隆）" % len(missing)
-    return record("标注回归", not failures, detail,
+        detail += "；跳过 %d 例（样本未就绪）" % len(missing)
+    if gaps:
+        detail += "；已知缺口 %d 项（xfail）" % len(gaps)
+    if xpass:
+        detail += "；XPASS %d 项" % len(xpass)
+
+    return record(label, not (failures or xpass), detail,
                   {"precision": p, "recall": r, "f1": f1,
-                   "tp": tp, "fp": fp, "fn": fn, "tn": tn, "failures": failures})
+                   "tp": tp, "fp": fp, "fn": fn, "tn": tn,
+                   "failures": failures + xpass, "gaps": gaps})
+
+
+def check_regression(quick=False):
+    """合成回归：样本随仓库分发，克隆后必跑。"""
+    return _run_case_set("cases-synthetic.json", "合成回归", quick=quick)
+
+
+def check_regression_real(quick=False):
+    """真实样本回归：依赖 refs/ 下的外部克隆，缺样本时跳过。"""
+    return _run_case_set("cases.json", "真实样本回归", quick=quick)
 
 
 def _fmt(x):
@@ -807,9 +839,9 @@ def render():
     L.append("结论：%s" % ("全部通过" if ok_all else "存在失败项"))
     if ok_all:
         checks = {r["name"]: r["extra"] for r in RESULTS}
-        reg = checks.get("标注回归", {})
+        reg = checks.get("合成回归", {})
         if reg:
-            L.append("      标注回归 F1=%s；鲁棒性 %d/%d" % (
+            L.append("      合成回归 F1=%s；鲁棒性 %d/%d" % (
                 _fmt(reg.get("f1")),
                 checks.get("鲁棒性", {}).get("passed", 0),
                 checks.get("鲁棒性", {}).get("total", 0)))
@@ -830,7 +862,8 @@ def main():
     check_syntax()
     check_selfcheck()
     check_prefilter_equivalence()
-    check_regression(quick=quick)
+    check_regression(quick=quick)          # 合成集：样本随仓库分发，必跑
+    check_regression_real(quick=quick)     # 真实样本集：依赖 refs/，缺样本则跳过
     check_robustness()
     check_near_negative()
     check_mutation_corpus()
