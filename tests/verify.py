@@ -83,13 +83,26 @@ def check_regression(quick=False):
 
     ok_present = {"confirmed", "likely"}
     ok_absent = {"absent", "possible"}
+
+    # 样本目录 refs/ 不在版本库内（体积大，且版权属于对方），需要自行 clone。
+    # 缺失时跳过对应用例，不能算成「漏检」——否则新克隆的仓库第一次跑验收就是红的，
+    # 而那会把「样本没准备」误报成「检测能力退化」。
+    def _resolve(p):
+        return p if os.path.isabs(p) else os.path.join(ROOT, p)
+
+    missing = [c["id"] for c in cases if not os.path.exists(_resolve(c["path"]))]
+    cases = [c for c in cases if os.path.exists(_resolve(c["path"]))]
+    if not cases:
+        return record("标注回归", True,
+                      "跳过 %d 例：样本目录 refs/ 未克隆（见 README 快速开始）" % len(missing))
+
     tp = fp = fn = tn = 0
     failures = []
 
     for case in cases:
         acc = ae.CapabilityAccumulator()
         try:
-            _h, meta = ae.audit_path(case["path"], acc=acc)
+            _h, meta = ae.audit_path(_resolve(case["path"]), acc=acc)
             lv = {c["id"]: c["level"] for c in ae.aggregate_from_buckets(acc)}
         except Exception as e:                  # noqa: BLE001
             failures.append("%s 异常：%s" % (case["id"], e))
@@ -115,6 +128,8 @@ def check_regression(quick=False):
 
     detail = "P=%s R=%s F1=%s（TP%d FP%d FN%d TN%d，%d 例）" % (
         _fmt(p), _fmt(r), _fmt(f1), tp, fp, fn, tn, len(cases))
+    if missing:
+        detail += "；跳过 %d 例（refs/ 样本未克隆）" % len(missing)
     return record("标注回归", not failures, detail,
                   {"precision": p, "recall": r, "f1": f1,
                    "tp": tp, "fp": fp, "fn": fn, "tn": tn, "failures": failures})
