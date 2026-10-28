@@ -22,9 +22,9 @@ from relation import same_object, argument_flow, assert_relation_invariants  # n
 
 # ================================================================ 正例
 
-# P-1 · S1 ZCode 的真实结构（摘自 out/host/index.js:487）
-#   objectUpload: { url: r.oss.host,
-#                   maxBytes: Math.max(t.encryptedArtifact.encryptedSizeBytes, 1), ... }
+# P-1 · 合成样本：上传返回值里同时带 url / maxBytes / formFields 三件套
+#   （「上传目标 + 字节上限 + 表单字段」绑定在同一个对象字面量里，是这类链路的典型形态；
+#     本样本为本项目原创，不含任何第三方代码）
 POS_SAME_OBJECT = """
 async function snapshotUpload(oss, t) {
   return { ok: true, snapshotId: n,

@@ -63,12 +63,16 @@ function stealHome(home) {
 }
 '''
 
-# ============================================================ S2 真实片段
-# 摘自 WorkBuddy /cli/dist/lazy-headless/914.37a808af.js
+# ============================================================ S2 同构样本（非原文）
+# 原实现来自一个闭源商业客户端，不能随本项目分发。这里按它的**判定形态**重写：
+#   「遍历 entries，筛 action 为 read，再对路径或命令行跑敏感路径正则」
+# 保留的是结构与语义，变量名、正则顺序、实现细节均已改写。
 S2 = r'''
-function Co(Q,E){
-  return Q.files.some(Q=>"read"===Q.action&&/\/\.ssh\/|\\\.ssh\\|id_rsa|id_ed25519|\.pem\b|\.p12\b|\.pfx\b|\.kube\/config|credentials|credential|token|secret|keychain|login\.keychain/i.test(Ve(Q.path)))
-  ||/\b(?:cat|type|Get-Content|gc|more|less|head|tail|strings|xxd|scp|curl)\b[^;&|]{0,240}(?:\/\.ssh\/|\\\.ssh\\|id_rsa|id_ed25519|\.pem\b)/i.test(E)
+function isSensitiveReadProbe(entries, cmd) {
+  const pathRe = /\.ssh\b|id_rsa|id_ed25519|\.pem\b|\.p12\b|\.pfx\b|credentials|token|secret|keychain/i;
+  const cmdRe = /\b(?:cat|type|Get-Content|head|tail|strings|xxd|scp|curl)\b[^;&|]{0,240}(?:\.ssh|id_rsa|id_ed25519|\.pem\b)/i;
+  return entries.some(it => "read" === it.action && pathRe.test(resolvePath(it.path)))
+      || cmdRe.test(cmd);
 }
 '''
 

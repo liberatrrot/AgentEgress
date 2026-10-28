@@ -62,8 +62,11 @@ python agentegress.py -m reports/scan.md -j reports/scan.json -H reports/scan.ht
 python agentegress.py --static -H reports/scan.html
 
 # 指定审计目标（目录或 app.asar）
-python agentegress.py --static-path "refs/ZCode\resources\app.asar" -H reports/zcode.html
+python agentegress.py --static-path "%LOCALAPPDATA%\Programs\ZCode\resources\app.asar" -H reports/zcode.html
 ```
+
+**默认扫描范围**：用户数据目录（`~/.<tool>`、`%APPDATA%`、`%LOCALAPPDATA%`）和标准安装目录（`%LOCALAPPDATA%\Programs\<Tool>`）。
+装在其它盘、自定义目录的客户端扫不到——指纹库不硬编码任何一台机器的盘符，请用 `--static-path` 指过去。
 
 **Windows 注意**：控制台读中文可能乱码，但报告文件编码是正确的。建议直接看 `-H` 产出的 HTML。
 
@@ -80,13 +83,6 @@ python agentegress.py --static-path "refs/ZCode\resources\app.asar" -H reports/z
 ---
 
 ## 输出示例
-
-### HTML 报告（单文件，自包含，可离线打开）
-
-![AgentEgress HTML 报告总览](docs/img/report-overview.png)
-
-> 取自一次真实扫描（7 个已装客户端 / 7.15 GB 数据目录）。路径已脱敏为 `<HOME>`。
-> 风险等级是**静态度量**，不是对该产品的安全结论——理由见本文开头的「根本局限」。
 
 **M1 + M2**（数据痕迹）：
 
